@@ -1,6 +1,6 @@
 # HPP-for-OpenThread
 Halloween++ scripting language for microcontrollers including support for OpenThread 
 
-Look at [readme.txt](http://github.com/arnulfrupp/HPP-for-OpenThread/master/README.txt)
+Look at [readme.txt](https://github.com/arnulfrupp/HPP-for-OpenThread/blob/master/README.txt)
 
 README.md will be added soon.
