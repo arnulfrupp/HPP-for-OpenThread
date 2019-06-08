@@ -572,7 +572,11 @@ Thread bindings are functions added to the core H++ scripting language.
 			the variable 'payload' contains the payload of the response and the variable 'content_format' contains the
 			content format (numerical) of the response.
 - coaps_add_resource(uri_p, info, hnd):	Same as above but for secure connection. Security credentials must have been set before 
-			using coaps_set_psk(..) or coaps_set_cert(..). 					 
+			using coaps_set_psk(..) or coaps_set_cert(..). 	
+			
+- coaps_hide_vars(b):	Determines if H++ variables are visible as coap resources (/var/x) with b = true or false.
+			The global variable Var_Hide_PW sets the password for unlocking the H++ variable access using the
+			none discoverable resource '/var_hide'. The default password is 'openvar'. (if Var_Hide_PW does not exist)
 
 PUT:
 - coap_put(a, uri_p, p [, c, hnd]): Sends a CoAP PUT request to the host with the IPv6 address a using the URI path option uri_p and
@@ -600,7 +604,6 @@ POST:
 			from coaps_connect(..).
 
  
-
 	
 >> The following functions shall only be used inside a CoAP request handler set with coap_add_resource(..):
 
@@ -621,10 +624,6 @@ POST:
 
 
 >> Secure connection - (additional application layer encryption with CoAPs):
-
-- coaps_hide_vars(b):	Determines if H++ variables are visible as coap resources (/var/x) with b = true or false.
-			The global variable Var_Hide_PW sets the password for unlocking the H++ variable access using the
-			none discoverable resource '/var_hide'. The default password is 'openvar'. (if Var_Hide_PW does not exist)
 			   
 - coaps_set_psk(IdentityName, Password, connected_handler): Sets the security credentials for the next DTLS connection.
 			The H++ handler function connected_handler (if any) is called after a connection is established or closed.
@@ -703,14 +702,3 @@ for details on the hardware capabilities.
 - timer_once(id, t, hdn): 	Starts a timer with the given id calling the H++ handler 'hdn' once fter 't' milliseconds.
 				Up to 8 timers (in total) are supported id = 0 .. 7.
 - timer_stop(id):		Stops the timer with a given id.	
-
-
-    
-
- 
-
-
-
-
-
-
