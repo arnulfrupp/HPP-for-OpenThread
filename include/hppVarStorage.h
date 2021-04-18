@@ -16,7 +16,7 @@
 /* Platform: POSIX and alike											        */
 /* Dependencies: none													        */
 /* ----------------------------------------------------------------------------	*/
-/* Copyright (c) 2018 - 2019, Arnulf Rupp							            */
+/* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
 /* All rights reserved.												            */
 /* 	                                                                            */
@@ -57,8 +57,8 @@
 
 
 // Global variables
-bool hppFloatPrintOn = false;
-bool hppIsFloatTested = false;
+extern bool hppFloatPrintOn;
+extern bool hppIsFloatTested;
 
 
 // Binary encoding type IDs and settings
@@ -79,11 +79,9 @@ enum hppBinaryTypeEnum { hppBinaryType_int8, hppBinaryType_int16, hppBinaryType_
 // Tables with binary type properties  
 // Types var, array and string are represented by the name of the variable holding the content
 
-const char* hppTypeNameList[HPP_MAX_TYPE_ID + 1] = { "int8", "int16", "int32", "bool", "var", "array", "string",
-	                                                        "float", "double", "fixstr", "uint8", "uint16", "uint32"};
-const size_t hppTypeSizeof[HPP_MAX_TYPE_ID + 1] = { 1, 2, 4, 1, HPP_VAR_NAME_MAX_LEN + 1, HPP_VAR_NAME_MAX_LEN + 1, HPP_VAR_NAME_MAX_LEN + 1, 
-	                                                       sizeof(float), sizeof(double), HPP_FIXSTR_MAX_LEN + 1, 1, 2, 4 };
-const size_t hppTypeNameLenght[HPP_MAX_TYPE_ID + 1] = { 4, 5, 5, 4, 3, 5, 6, 5, 6, 6, 5, 6, 6 };
+extern const char* hppTypeNameList[HPP_MAX_TYPE_ID + 1];
+extern const size_t hppTypeSizeof[HPP_MAX_TYPE_ID + 1];
+extern const size_t hppTypeNameLenght[HPP_MAX_TYPE_ID + 1];
 
 
 // Structure for Key-Value pairs
@@ -130,7 +128,7 @@ char* hppVarPutStr(const char aszKey[], const char aszValue[], size_t* apcbResul
 char* hppVarGet(const char aszKey[], size_t* apcbValueLen_Out);
 
 // Get variable key name reference based on URI string (not case sensitve search --> aCaseSensitive = false),
-// or based on the the key name itself (aCaseSensitive = false). 
+// or based on the the key name itself (aCaseSensitive = true). 
 // The reference is stable unless the variable it deleted. Updating the value keeps the reference intact.  
 const char* hppVarGetKey(const char aszKey[], bool abCaseSensitive);
 

@@ -16,7 +16,7 @@
 /* Platform: POSIX and alike											        */
 /* Dependencies: none													        */
 /* ----------------------------------------------------------------------------	*/
-/* Copyright (c) 2018 - 2019, Arnulf Rupp							            */
+/* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
 /* All rights reserved.												            */
 /* 	                                                                            */
@@ -60,6 +60,22 @@ const char* hppVarGetAllEndNodes = "\\e,%s";
 const char* hppVarGetAllRootNodes = "\\r,%s";
 const char* hppVarGetAllNodes = "\\b,%s";
 const char* hppVarGetAllKeyValuePair = "\\1;%s=\"%s\"";
+
+
+// Global variables
+bool hppFloatPrintOn = false;
+bool hppIsFloatTested = false;
+	
+
+// Tables with binary type properties  
+// Types var, array and string are represented by the name of the variable holding the content
+
+const char* hppTypeNameList[HPP_MAX_TYPE_ID + 1] = { "int8", "int16", "int32", "bool", "var", "array", "string",
+	                                                        "float", "double", "fixstr", "uint8", "uint16", "uint32"};
+const size_t hppTypeSizeof[HPP_MAX_TYPE_ID + 1] = { 1, 2, 4, 1, HPP_VAR_NAME_MAX_LEN + 1, HPP_VAR_NAME_MAX_LEN + 1, HPP_VAR_NAME_MAX_LEN + 1, 
+	                                                       sizeof(float), sizeof(double), HPP_FIXSTR_MAX_LEN + 1, 1, 2, 4 };
+const size_t hppTypeNameLenght[HPP_MAX_TYPE_ID + 1] = { 4, 5, 5, 4, 3, 5, 6, 5, 6, 6, 5, 6, 6 };
+
 
 
 #ifdef __arm__
@@ -131,9 +147,11 @@ char* hppVarPut(const char aszKey[], const char apValue[], size_t acbValueLen)
 		}
 
 		// Realloc value array to accommodate new length
-		newVar->pValue = (char *) realloc(newVar->pValue, acbValueLen + 1); // Add one byte for zero termination
+		char *pTmp = newVar->pValue;
+		newVar->pValue = (char *) realloc(pTmp, acbValueLen + 1); // Add one byte for zero termination
+		if(newVar->pValue == NULL) free(pTmp);                    // New allocation failed, free old memory 
 		
-		// If only the size of the variable changes, it must be possbible to initialize the newly added bytes with zero     
+		// If only the size of the variable changes, it must be possible to initialize the newly added bytes with zero     
 		if(apValue == hppInitValueWithZero && acbValueLen > newVar->cbValueLen) 
 		{
 			if(newVar->pValue != NULL) memset(newVar->pValue + newVar->cbValueLen, 0, acbValueLen - newVar->cbValueLen);
@@ -554,8 +572,8 @@ size_t hppGetMemberFromStruct(const char* apchStruct, size_t acbStructLen, const
 	
 	if(acbStructLen >= nTypeIndex) 
 	{
-		if(apRecordSize != NULL) *apRecordSize = *((__hpp_packed int16_t*)(apchStruct + cbMemberListLen + 1));
-		nItems = *((__hpp_packed int16_t*)(apchStruct + cbMemberListLen + 3));
+		if(apRecordSize != NULL) *apRecordSize = *((int16_t*)(apchStruct + cbMemberListLen + 1));
+		nItems = *((int16_t*)(apchStruct + cbMemberListLen + 3));
 		
 		while(*szSearchPos != 0)
 		{		
@@ -601,8 +619,8 @@ size_t hppGetStructRecordCount(const char* apchStruct, size_t acbStructLen, bool
 	cbMemberListLen = strlen(apchStruct);
 	if(acbStructLen < cbMemberListLen + 5) return 0;
 	
-	nRecordSize = *((__hpp_packed int16_t*)(apchStruct + cbMemberListLen + 1));
-	nItems = *((__hpp_packed int16_t*)(apchStruct + cbMemberListLen + 3));
+	nRecordSize = *((int16_t*)(apchStruct + cbMemberListLen + 1));
+	nItems = *((int16_t*)(apchStruct + cbMemberListLen + 3));
 	nPayloadLen = acbStructLen - cbMemberListLen - 5 - nItems;
 	
 	if(nPayloadLen > 0 && nRecordSize != 0) 
@@ -653,7 +671,7 @@ int16_t hppGetStructHeader(char* pchHeader_out, const char* szTypeDef)
 		pchHeader_out[cbLen - nItemsLeft] = (char)nTypeID;
 		nItemsLeft--;
 				
-		while(isalnum(szTypeDef[nRead])) pchHeader_out[nWrite++] = szTypeDef[nRead++];
+		while(isalnum((int)szTypeDef[nRead])) pchHeader_out[nWrite++] = szTypeDef[nRead++];
 		if(szTypeDef[nRead] == ',') pchHeader_out[nWrite++] = ',';
 		else break;
 			
@@ -662,9 +680,9 @@ int16_t hppGetStructHeader(char* pchHeader_out, const char* szTypeDef)
 	
 	if(szTypeDef[nRead] != 0) { nWrite = 0; nStructLen = 0; }
 	pchHeader_out[nWrite++] = 0;
-	*((__hpp_packed int16_t*)(pchHeader_out + nWrite)) = nStructLen;
+	*((int16_t*)(pchHeader_out + nWrite)) = nStructLen;
 	nWrite += 2;
-	*((__hpp_packed int16_t*)(pchHeader_out + nWrite)) = nItems;
+	*((int16_t*)(pchHeader_out + nWrite)) = nItems;
 	
 	return nStructLen;
 }

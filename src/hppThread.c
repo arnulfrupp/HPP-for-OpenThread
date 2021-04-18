@@ -10,16 +10,14 @@
 /* OpenThread Support Library										            */
 /*																	            */
 /*   - Initialization and resource managment						            */
-/*   - Thread Main loop  			       							           	*/
 /*   - CoAP support functions										            */
-/*   - hppVarStorage bindings (PUT, GET var/x) if compiled with __INCL_HPP_VAR_ */
-/*   - hppParser bindings (POST var/x) if compiled with __INCL_HPP_PARSER_      */
+/*   - hppVarStorage bindings (PUT, GET var/x)                                  */
+/*   - hppParser bindings (POST var/x)                                          */
 /* ----------------------------------------------------------------------------	*/
-/* Platform: OpenThread on Nordic nRF52840							            */
-/* Dependencies: OpenThread, Nordic SDK; If activated: hppVarStorage, hppParser */
-/* Nordic SDK Version: nRF5_SDK_for_Thread_and_Zigbee_v3.0.0_d310e71	        */
+/* Platform: OpenThread integrated in Zephire RTOS  				            */
+/* Nordic SDK Version: Connect SDK v1.4.1	       								*/
 /* ----------------------------------------------------------------------------	*/
-/* Copyright (c) 2018 - 2019, Arnulf Rupp							            */
+/* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
 /* All rights reserved.												            */
 /* 	                                                                            */
@@ -46,43 +44,31 @@
 /* THE POSSIBILITY OF SUCH DAMAGE.                                              */
 /* ----------------------------------------------------------------------------	*/
 
+
+// ATTENTION - Thread safety:
+// Functions in this library are usually called from an openthread callback, thus from openthread context
+// Calling functions from outside requires locking the openthread mutex with:
+//
+// openthread_api_mutex_lock(hppOpenThreadContext);
+// function call(s)...
+// openthread_api_mutex_unlock(hppOpenThreadContext);
+//
+// Exemptions are the (static) callback functions for the H++ thread function libray and the H++ poll function
+// This functions internally lock the openthread mutex such they can be safely called from the H++ parser
+
+
+
 #include "../include/hppThread.h"
-#include "../hppConfig.h"
 
+// Include Halloween Zephyr library with thread synchronized versions of the H++ scripting libraries
+#include "../include/hppZephyr.h"
 
-// Platform SDK
-#include "app_scheduler.h"
-#include "app_timer.h"
-#include "nrf_log_ctrl.h"
-#include "nrf_log_default_backends.h"
+// Zephir OpenThread integration Library
+#include <net/openthread.h>
 
 // Thread
-#include "thread_utils.h"
 #include <openthread/platform/alarm-milli.h>
 #include <openthread/cli.h>
-
-// SDK Settings
-#include "sdk_config.h"
-
-
-// ---------------------------
-// Thread Settings
-// ---------------------------
-
-#define SCHED_QUEUE_SIZE      32                                  // Maximum number of events in the scheduler queue. 
-#define SCHED_EVENT_DATA_SIZE APP_TIMER_SCHED_EVENT_DATA_SIZE     // Maximum app_scheduler event size. 
-
-
-// ---------------------------
-// Byte alignment
-// ---------------------------
-
-#ifdef __arm__
-#define __hpp_packed __packed            
-#else
-#define __hpp_packed
-#warning no arm environment
-#endif
 
 
 // ---------------------------
@@ -91,8 +77,6 @@
 
 #define HPP_MAX_PAYLOAD_LENGTH 1280       // Maximum Payload size for assignment to hppVar resources. 1280 is the maximum expected for regular (non-blockwise) coap
 
-#define HPP_HIDE_VAR_RESOURCE_PASSWORD "openvar"
-
 #define HPP_MAX_CLI_HPP_CMD_LEN 80
 #define HPP_MAX_CLI_COUNT 10
 
@@ -100,6 +84,9 @@
 // -----------------------
 // Global Variables
 // -----------------------
+
+struct openthread_context *hppOpenThreadContext;
+otInstance *hppOpenThreadInstance = NULL;        // hppOpenThreadContext->instance
 
 char* hppWellknownCoreStr = NULL;
 bool hppIsCoapsInitialized = false;
@@ -112,33 +99,20 @@ char* hppCoapsCert = NULL;
 char* hppCoapsCertKey = NULL;
 char* hppCoapsCaCert = NULL;
 
-#ifdef __INCL_HPP_PARSER_
-
 static uint32_t hppThreadTimeoutTime = 1000;   // stop H++ interpreter after 1000 ms by default -> 0 means no timeout
 
 // The maximum time consumed by a H++ code execution call should always stay well below hppThreadTimeoutTime to avoid random timeout errors
 static uint32_t hppThreadMaxTimeMeasured = 0;  // maximum time span measured for any H++ script being executed
 
-// Current CoAP Mesage and MessageInfo used in CoAP related H++ commands 
-struct hppCurrentCoapContextStruct 
-{
-    otMessage* pCurrentCoapMessage;
-    const otMessageInfo* pCurrentCoapMessageInfo;
-    bool bCurrentCoapResponseDone;   // Keeps track if there was an answer provide on the current message already 
-};
-
-typedef struct hppCurrentCoapContextStruct hppCurrentCoapContext;
-static hppCurrentCoapContext hppMyCurrentCoapContext;
+// Current CoAP context for coap_respond() H++ command 
+hppCoapMessageContext hppMyCurrentCoapMessageContext;
 
 // User define CLI Commands 
 static otCliCommand* hppCliCommandTable = NULL;
 static size_t hppCliCommandTableSize = 0; 
 
-#endif
-
-#ifdef __INCL_HPP_VAR_
-static bool hppHideVarResources = false;
-#endif
+// Hiding variables
+bool hppHideVarResources = false;
 
 // -----------------------
 // Send CoAP Messages
@@ -155,7 +129,7 @@ otError hppCoapSend(const char* aszUriPathAddress, const char* aszUriPathOptions
     otMessageInfo myMessageInfo;
     bool bSecure = false;
 
-    pMessage = otCoapNewMessage(thread_ot_instance_get(), NULL);
+    pMessage = otCoapNewMessage(hppOpenThreadInstance, NULL);
     if (pMessage == NULL) return OT_ERROR_NO_BUFS;
 
     if(abConfirmable) otCoapMessageInit(pMessage, OT_COAP_TYPE_CONFIRMABLE, aCoapCode);
@@ -178,8 +152,8 @@ otError hppCoapSend(const char* aszUriPathAddress, const char* aszUriPathOptions
             else otIp6AddressFromString(aszUriPathAddress, &myMessageInfo.mPeerAddr);    
         }
 
-        if(bSecure == true) error = otCoapSecureSendRequest(thread_ot_instance_get(), pMessage, aResponseHandler, aContext); 
-		else error = otCoapSendRequest(thread_ot_instance_get(), pMessage, &myMessageInfo, aResponseHandler, aContext);
+        if(bSecure == true) error = otCoapSecureSendRequest(hppOpenThreadInstance, pMessage, aResponseHandler, aContext); 
+		else error = otCoapSendRequest(hppOpenThreadInstance, pMessage, &myMessageInfo, aResponseHandler, aContext);
 	}
 
     if (error != OT_ERROR_NONE)
@@ -267,7 +241,7 @@ int hppCoapGetPayloadLenght(otMessage *apMessage)
 // CoAP Response and Confirm Messages
 // ----------------------------------
 
-// Return an empty acknowledge message if the original message was a confirmable message 
+// Return an acknowledge message with no payload if the original message was a confirmable message 
 otError hppCoapConfirmWithCode(otMessage* apMessage, const otMessageInfo* apMessageInfo, otCoapCode aCoapCode)
 {
     otError error = OT_ERROR_NO_BUFS;
@@ -276,7 +250,7 @@ otError hppCoapConfirmWithCode(otMessage* apMessage, const otMessageInfo* apMess
     // Do not sent acknoledgment if the requesting messege in non confirmable  
     if(otCoapMessageGetType(apMessage) != OT_COAP_TYPE_CONFIRMABLE) return OT_ERROR_NONE;
 
-    pMyMessage = otCoapNewMessage(thread_ot_instance_get(), NULL);
+    pMyMessage = otCoapNewMessage(hppOpenThreadInstance, NULL);
     if (pMyMessage == NULL) return error;
 
     //otCoapMessageInit(pMyMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, aCoapCode);
@@ -286,15 +260,15 @@ otError hppCoapConfirmWithCode(otMessage* apMessage, const otMessageInfo* apMess
 	if(otCoapMessageGetToken(apMessage) != NULL) 
 		otCoapMessageSetToken(pMyMessage, otCoapMessageGetToken(apMessage), otCoapMessageGetTokenLength(apMessage));
    
-    if(apMessageInfo->mSockPort == OT_DEFAULT_COAP_SECURE_PORT) error = otCoapSecureSendResponse(thread_ot_instance_get(), pMyMessage, apMessageInfo);
-    else error = otCoapSendResponse(thread_ot_instance_get(), pMyMessage, apMessageInfo);
+    if(apMessageInfo->mSockPort == OT_DEFAULT_COAP_SECURE_PORT) error = otCoapSecureSendResponse(hppOpenThreadInstance, pMyMessage, apMessageInfo);
+    else error = otCoapSendResponse(hppOpenThreadInstance, pMyMessage, apMessageInfo);
 
     if(error != OT_ERROR_NONE) otMessageFree(pMyMessage);
 
     return error;
 }
 
-// Return an empty acknowledge message with code 2.00 (OT_COAP_CODE_RESPONSE_MIN) if the original message was a confirmable message 
+// Return an acknowledge message with no payload with code 2.00 (OT_COAP_CODE_RESPONSE_MIN) if the original message was a confirmable message 
 otError hppCoapConfirm(otMessage* apMessage, const otMessageInfo* apMessageInfo)
 {
     return hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_VALID);
@@ -312,13 +286,11 @@ otError hppCoapRespond(otMessage* apMessage, const otMessageInfo* apMessageInfo,
 
     if(apPayload == NULL) return OT_ERROR_NONE;
 
-    pMyMessage = otCoapNewMessage(thread_ot_instance_get(), NULL);
+    pMyMessage = otCoapNewMessage(hppOpenThreadInstance, NULL);
     if(pMyMessage == NULL) return OT_ERROR_NO_BUFS;
 
 	if(otCoapMessageGetType(apMessage) == OT_COAP_TYPE_CONFIRMABLE) 
 	{
-		//otCoapMessageInit(pMyMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, OT_COAP_CODE_CONTENT);
-		//otCoapMessageSetMessageId(pMyMessage, otCoapMessageGetMessageId(apMessage));
         otCoapMessageInitResponse(pMyMessage, apMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, OT_COAP_CODE_CONTENT);
 	}
 	else otCoapMessageInit(pMyMessage, OT_COAP_TYPE_NON_CONFIRMABLE, OT_COAP_CODE_CONTENT);
@@ -329,13 +301,6 @@ otError hppCoapRespond(otMessage* apMessage, const otMessageInfo* apMessageInfo,
 	if(aContentFormat != OT_COAP_OPTION_CONTENT_FORMAT_TEXT_PLAIN)    // default format
 	{
 		otCoapMessageAppendContentFormatOption(pMyMessage, aContentFormat);
-
-		//uint8_t myContenFormat = aContentFormat;
-		//otCoapOption  myContentFormatOption;
-		//myContentFormatOption.mNumber = OT_COAP_OPTION_CONTENT_FORMAT;
-		//myContentFormatOption.mLength = 1;
-		//myContentFormatOption.mValue = &myContenFormat;
-		//otCoapMessageAppendOption(pMyMessage, &myContentFormatOption);
 	}
 
 	otCoapMessageSetPayloadMarker(pMyMessage);
@@ -344,8 +309,8 @@ otError hppCoapRespond(otMessage* apMessage, const otMessageInfo* apMessageInfo,
     error = otMessageAppend(pMyMessage, apPayload, cbPayloadLen);
     if(error == OT_ERROR_NONE) 
 	{
-        if(myMessageInfo.mSockPort == OT_DEFAULT_COAP_SECURE_PORT) error = otCoapSecureSendResponse(thread_ot_instance_get(), pMyMessage, &myMessageInfo);
-        else error = otCoapSendResponse(thread_ot_instance_get(), pMyMessage, &myMessageInfo);
+        if(myMessageInfo.mSockPort == OT_DEFAULT_COAP_SECURE_PORT) error = otCoapSecureSendResponse(hppOpenThreadInstance, pMyMessage, &myMessageInfo);
+        else error = otCoapSendResponse(hppOpenThreadInstance, pMyMessage, &myMessageInfo);
 	}
 
     if(error != OT_ERROR_NONE) otMessageFree(pMyMessage);
@@ -368,12 +333,37 @@ otError hppCoapRespondFormattedString(otMessage* apMessage, const otMessageInfo*
     return hppCoapRespond(apMessage, apMessageInfo, aszPayloadString, strlen(aszPayloadString), aContentFormat);
 }
 
+
+// Resond with CoAP code empty to a CoAP Message with given MessageInfo from original message if it was confirmable. 
+// The empty response has no payload and and indicates to the client that a later response with the same token may come.
+otError hppCoapRespondEmpty(otMessage* apMessage, const otMessageInfo* apMessageInfo)
+{
+    otError error;
+    otMessage* pMyMessage;
+
+    // Do not sent acknoledgment if the requesting messege in non confirmable  
+    if(otCoapMessageGetType(apMessage) != OT_COAP_TYPE_CONFIRMABLE) return OT_ERROR_NONE;
+
+    pMyMessage = otCoapNewMessage(hppOpenThreadInstance, NULL);
+    if(pMyMessage == NULL) return OT_ERROR_NO_BUFS;
+
+    otCoapMessageInitResponse(pMyMessage, apMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, OT_COAP_CODE_EMPTY);
+	
+    if(apMessageInfo->mSockPort == OT_DEFAULT_COAP_SECURE_PORT) error = otCoapSecureSendResponse(hppOpenThreadInstance, pMyMessage, apMessageInfo);
+    else error = otCoapSendResponse(hppOpenThreadInstance, pMyMessage, apMessageInfo);
+
+    if(error != OT_ERROR_NONE) otMessageFree(pMyMessage);
+
+    return error;
+}
+
+
 // Store CoAP message context for a delayed answer
 void hppCoapStoreMessageContext(hppCoapMessageContext* apCoapMessageContext, otMessage* apMessage, const otMessageInfo* apMessageInfo)
 {
     apCoapMessageContext->mMessageInfo = *apMessageInfo;
     apCoapMessageContext->mCoapType = otCoapMessageGetType(apMessage); 
-    apCoapMessageContext->mCoapMessageId =  otCoapMessageGetMessageId(apMessage);  // uint16_t
+    apCoapMessageContext->mCoapCode = otCoapMessageGetCode(apMessage);
     strcpy(apCoapMessageContext->szHeaderText, "context:");
 
     if(otCoapMessageGetToken(apMessage) != NULL)
@@ -381,33 +371,31 @@ void hppCoapStoreMessageContext(hppCoapMessageContext* apCoapMessageContext, otM
         apCoapMessageContext->mCoapMessageTokenLength = otCoapMessageGetTokenLength(apMessage);
         memcpy(apCoapMessageContext->mCoapMessageToken, otCoapMessageGetToken(apMessage), apCoapMessageContext->mCoapMessageTokenLength);
     }
-    else apCoapMessageContext->mCoapMessageTokenLength = 0; 
+    else apCoapMessageContext->mCoapMessageTokenLength = 0;
+
+    apCoapMessageContext->mHasResponded = 0;
 }
 
-// Resond to a CoAP Message with given hppCoapMessageContext original message. Both confirmable and non comfirmable is supported. 
-// The the response payload is piggybacked with the acknowledgment in case of confirmable requests.
-// Adds a CoAP format option of 'aContentFormat' is different from the defaut format 'OT_COAP_OPTION_CONTENT_FORMAT_TEXT_PLAIN' 
+
 otError hppCoapRespondTo(const hppCoapMessageContext* apCoapMessageContext, const char* apPayload, size_t cbPayloadLen, otCoapOptionContentFormat aContentFormat)
 {
     otError error;
     otMessage* pMyMessage;
 	otMessageInfo myMessageInfo = apCoapMessageContext->mMessageInfo;
 
+    if(apCoapMessageContext->mCoapMessageTokenLength == 0) return OT_ERROR_INVALID_ARGS;
     if(apPayload == NULL) return OT_ERROR_NONE;
 
-    pMyMessage = otCoapNewMessage(thread_ot_instance_get(), NULL);
+    pMyMessage = otCoapNewMessage(hppOpenThreadInstance, NULL);
     if(pMyMessage == NULL) return OT_ERROR_NO_BUFS;
 
 	if(apCoapMessageContext->mCoapType == OT_COAP_TYPE_CONFIRMABLE) 
 	{
-		otCoapMessageInit(pMyMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, OT_COAP_CODE_CONTENT);
-		//otCoapMessageSetMessageId(pMyMessage, apCoapMessageContext->mCoapMessageId);         TODO:  Check if it works without message ID
-        
+		otCoapMessageInit(pMyMessage, OT_COAP_TYPE_CONFIRMABLE, apPayload == NULL ? OT_COAP_CODE_NOT_FOUND : OT_COAP_CODE_CONTENT);        
 	}
-	else otCoapMessageInit(pMyMessage, OT_COAP_TYPE_NON_CONFIRMABLE, OT_COAP_CODE_CONTENT);
+	else otCoapMessageInit(pMyMessage, OT_COAP_TYPE_NON_CONFIRMABLE, apPayload == NULL ? OT_COAP_CODE_NOT_FOUND : OT_COAP_CODE_CONTENT);
 	
-	if(apCoapMessageContext->mCoapMessageTokenLength != 0) 
-		otCoapMessageSetToken(pMyMessage, apCoapMessageContext->mCoapMessageToken, apCoapMessageContext->mCoapMessageTokenLength);
+	otCoapMessageSetToken(pMyMessage, apCoapMessageContext->mCoapMessageToken, apCoapMessageContext->mCoapMessageTokenLength);
 
 	if(aContentFormat != OT_COAP_OPTION_CONTENT_FORMAT_TEXT_PLAIN)  
 		otCoapMessageAppendContentFormatOption(pMyMessage, aContentFormat);
@@ -415,11 +403,13 @@ otError hppCoapRespondTo(const hppCoapMessageContext* apCoapMessageContext, cons
 	otCoapMessageSetPayloadMarker(pMyMessage);
 	memset(&myMessageInfo.mSockAddr, 0, sizeof(myMessageInfo.mSockAddr));
 
-    error = otMessageAppend(pMyMessage, apPayload, cbPayloadLen);
+    if(apPayload != NULL) error = otMessageAppend(pMyMessage, apPayload, cbPayloadLen);
+    else error = OT_ERROR_NONE;
+
     if(error == OT_ERROR_NONE) 
 	{
-        if(myMessageInfo.mSockPort == OT_DEFAULT_COAP_SECURE_PORT) error = otCoapSecureSendResponse(thread_ot_instance_get(), pMyMessage, &myMessageInfo);
-        else error = otCoapSendResponse(thread_ot_instance_get(), pMyMessage, &myMessageInfo);
+        if(myMessageInfo.mSockPort == OT_DEFAULT_COAP_SECURE_PORT) error = otCoapSecureSendResponse(hppOpenThreadInstance, pMyMessage, &myMessageInfo);
+        else error = otCoapSendResponse(hppOpenThreadInstance, pMyMessage, &myMessageInfo);
 	}
 
     if(error != OT_ERROR_NONE) otMessageFree(pMyMessage);
@@ -462,7 +452,7 @@ otCoapOptionContentFormat hppGetCoapContentFormat(otMessage* apMessage)
     uint16_t mLenght = hppGetCoapOption(apMessage, OT_COAP_OPTION_CONTENT_FORMAT, pui8Value, 2);
 
 	if(mLenght == 1) mCoapContentFomat = *pui8Value;
-	if(mLenght == 2) mCoapContentFomat = *((__hpp_packed int16_t*)pui8Value);
+	if(mLenght == 2) mCoapContentFomat = *((int16_t*)pui8Value);
 	
 	return mCoapContentFomat;
 }
@@ -558,8 +548,8 @@ void hppCoapsConnectedDefaultHandler(bool abConnected, void *apContext)
     // Stop Coaps if aConnected == false and connection is down  (not used so far)
     if(abConnected == false && hppIsCoapsShutdownStarted == true)
     {
-        //otCoapRemoveResource(thread_ot_instance_get(), ???);   ---> schould have been done before setting hppIsCoapsInitialized to false 
-        otCoapSecureStop(thread_ot_instance_get());
+        //otCoapRemoveResource(hppOpenThreadInstance, ???);   ---> schould have been done before setting hppIsCoapsInitialized to false 
+        otCoapSecureStop(hppOpenThreadInstance);
         hppIsCoapsInitialized = false;
         hppIsCoapsShutdownStarted = false;
     }
@@ -582,13 +572,13 @@ otError hppCreateCoapsContextWithPSK(const char* szIdentityName, const char* szP
     strcpy(hppCoapsID, szIdentityName);
     strcpy(hppCoapsPSK, szPassword);
 
-    otCoapSecureSetPsk(thread_ot_instance_get(), (uint8_t*)hppCoapsPSK, strlen(hppCoapsPSK), (uint8_t*)hppCoapsID, strlen(hppCoapsID));
+    otCoapSecureSetPsk(hppOpenThreadInstance, (uint8_t*)hppCoapsPSK, strlen(hppCoapsPSK), (uint8_t*)hppCoapsID, strlen(hppCoapsID));
     //if(error != OT_ERROR_NONE) return error;
 
-    otCoapSecureSetSslAuthMode(thread_ot_instance_get(), false);   // verifyPeerCert = false
-    otCoapSecureSetClientConnectedCallback(thread_ot_instance_get(), aConnectHandler, aContext);
-    // otCoapSecureSetDefaultHandler(thread_ot_instance_get(), &DefaultHandler, NULL);   // no context
-    error = otCoapSecureStart(thread_ot_instance_get(), OT_DEFAULT_COAP_SECURE_PORT);
+    otCoapSecureSetSslAuthMode(hppOpenThreadInstance, false);   // verifyPeerCert = false
+    otCoapSecureSetClientConnectedCallback(hppOpenThreadInstance, aConnectHandler, aContext);
+    // otCoapSecureSetDefaultHandler(hppOpenThreadInstance, &DefaultHandler, NULL);   // no context
+    error = otCoapSecureStart(hppOpenThreadInstance, OT_DEFAULT_COAP_SECURE_PORT);
     
     if(error != OT_ERROR_NONE) return error;
     hppIsCoapsInitialized = true;
@@ -632,21 +622,21 @@ otError hppCreateCoapsContextWithCert(const char* szX509Cert, const char* szPriv
         }
     }
 
-    otCoapSecureSetCertificate(thread_ot_instance_get(), (const uint8_t *)hppCoapsCert, strlen(hppCoapsCert),
+    otCoapSecureSetCertificate(hppOpenThreadInstance, (const uint8_t *)hppCoapsCert, strlen(hppCoapsCert),
                		           (const uint8_t *)hppCoapsCertKey, strlen(hppCoapsCertKey));
     //if(error != OT_ERROR_NONE) return error;
 
     if(hppCoapsCaCert != NULL)
     { 
-        otCoapSecureSetCaCertificateChain(thread_ot_instance_get(), (const uint8_t *)hppCoapsCaCert, strlen(hppCoapsCaCert));
+        otCoapSecureSetCaCertificateChain(hppOpenThreadInstance, (const uint8_t *)hppCoapsCaCert, strlen(hppCoapsCaCert));
         //if(error != OT_ERROR_NONE) return error;
-        otCoapSecureSetSslAuthMode(thread_ot_instance_get(), true);   // verifyPeerCert = true
+        otCoapSecureSetSslAuthMode(hppOpenThreadInstance, true);   // verifyPeerCert = true
     }
-    else otCoapSecureSetSslAuthMode(thread_ot_instance_get(), false);   // verifyPeerCert = false
+    else otCoapSecureSetSslAuthMode(hppOpenThreadInstance, false);   // verifyPeerCert = false
  
-    otCoapSecureSetClientConnectedCallback(thread_ot_instance_get(), aConnectHandler, aContext);
-    // otCoapSecureSetDefaultHandler(thread_ot_instance_get(), &DefaultHandler, NULL);   // no context
-    error = otCoapSecureStart(thread_ot_instance_get(), OT_DEFAULT_COAP_SECURE_PORT);
+    otCoapSecureSetClientConnectedCallback(hppOpenThreadInstance, aConnectHandler, aContext);
+    // otCoapSecureSetDefaultHandler(hppOpenThreadInstance, &DefaultHandler, NULL);   // no context
+    error = otCoapSecureStart(hppOpenThreadInstance, OT_DEFAULT_COAP_SECURE_PORT);
 
     if(error != OT_ERROR_NONE) return error;
     hppIsCoapsInitialized = true;
@@ -672,7 +662,7 @@ otError hppCoapsConnect(const char* aszUriPathAddress, otHandleCoapSecureClientC
     theSockAddr.mPort = OT_DEFAULT_COAP_SECURE_PORT;
     //theSockAddr.mScopeId = OT_NETIF_INTERFACE_ID_THREAD;       
 
-    error = otCoapSecureConnect(thread_ot_instance_get(), &theSockAddr, aConnectHandler, aContext);
+    error = otCoapSecureConnect(hppOpenThreadInstance, &theSockAddr, aConnectHandler, aContext);
 
     return error;
 }
@@ -680,21 +670,21 @@ otError hppCoapsConnect(const char* aszUriPathAddress, otHandleCoapSecureClientC
 // Disconnect open DTLS connection
 void hppCoapsDisconnect()
 {
-    if(otCoapSecureIsConnectionActive(thread_ot_instance_get())) otCoapSecureDisconnect(thread_ot_instance_get());
+    if(otCoapSecureIsConnectionActive(hppOpenThreadInstance)) otCoapSecureDisconnect(hppOpenThreadInstance);
 }
 
 
 // Stop Coaps session
 void hppDeleteCoapsContext()
 {
-    if(otCoapSecureIsConnectionActive(thread_ot_instance_get())) 
+    if(otCoapSecureIsConnectionActive(hppOpenThreadInstance)) 
     {
         hppIsCoapsShutdownStarted = true;
-        otCoapSecureDisconnect(thread_ot_instance_get());
+        otCoapSecureDisconnect(hppOpenThreadInstance);
     }
     else
     {
-        otCoapSecureStop(thread_ot_instance_get());
+        otCoapSecureStop(hppOpenThreadInstance);
         hppIsCoapsInitialized = false;
     }   
 }
@@ -712,7 +702,6 @@ bool hppCoapAddResource(const char* apResourceName, const char* szResourceInform
 {
     otCoapResource* pCoapResource;
     char* pResourceName;
-    otError error;
 
     if(apResourceName == NULL) return false;
     if(strlen(apResourceName) == 0) return false;
@@ -740,12 +729,12 @@ bool hppCoapAddResource(const char* apResourceName, const char* szResourceInform
     pCoapResource->mContext = apContext;
     pCoapResource->mNext = NULL;
 
-    if(abSecure) error = otCoapSecureAddResource(thread_ot_instance_get(), pCoapResource);
-    else error = otCoapAddResource(thread_ot_instance_get(), pCoapResource);
+    if(abSecure) otCoapSecureAddResource(hppOpenThreadInstance, pCoapResource);
+    else otCoapAddResource(hppOpenThreadInstance, pCoapResource);
 
     //if(szResourceInformation == NULL) apResourceName = NULL; 
 
-    if(error == OT_ERROR_NONE && szResourceInformation != NULL)
+    if(szResourceInformation != NULL)
     {
         size_t cbLen = strlen(apResourceName) + strlen(szResourceInformation) + 6;  // add </>;, + null byte
         if(hppWellknownCoreStr == NULL) 
@@ -767,58 +756,58 @@ bool hppCoapAddResource(const char* apResourceName, const char* szResourceInform
         }
     }
     
-    if(error != OT_ERROR_NONE)
-    { 
-        free(pResourceName); 
-        free(pCoapResource); 
-        return false; 
+    return true;
+}
+
+
+char* hppNew_WellknownCore()
+{
+    char* pchBuf;
+    size_t cbVarLen;
+    size_t cbWellknownCoreLen = 0;
+
+    if(hppHideVarResources == false) cbVarLen = hppVarGetAll(NULL, 0, "",  "\\1,</var/%s>");
+    else cbVarLen = 0;
+
+    if(hppWellknownCoreStr != NULL) cbWellknownCoreLen = strlen(hppWellknownCoreStr);
+    pchBuf = malloc(cbVarLen + cbWellknownCoreLen + 2);   // One extra comma + null byte
+
+    if(pchBuf != NULL && cbVarLen != -1)
+    {
+        if(hppWellknownCoreStr != NULL) strcpy(pchBuf, hppWellknownCoreStr);
+        else pchBuf[0] = 0;
+
+        if(pchBuf[0] != 0 && cbVarLen > 0) strcat(pchBuf, ",");
+        if(hppHideVarResources == false) hppVarGetAll(pchBuf + strlen(pchBuf), cbVarLen + 1, "",  "\\1,</var/%s>");
+    }       
+    else 
+    {
+        if(pchBuf != NULL) free(pchBuf);
+        pchBuf = NULL;
     }
-    else return true;
+
+    return pchBuf;
 }
 
 
 // Coap Handlers for Resource Discovery
 static void hppCoapHandler_Wellknown_Core(void* apContext, otMessage* apMessage, const otMessageInfo* apMessageInfo)
 {
+    hppCoapMessageContext theCoapMessageContext;
+    bool bSuccess;
+    
     if (hppIsCoapGET(apMessage))
     {
+        hppCoapStoreMessageContext(&theCoapMessageContext, apMessage, apMessageInfo);
 
-#ifdef __INCL_HPP_VAR_
-        char* pchBuf;
-        size_t cbVarLen;
-        size_t cbWellknownCoreLen = 0;
-
-        if(hppHideVarResources == false) cbVarLen = hppVarGetAll(NULL, 0, "",  "\\1,</var/%s>");
-        else cbVarLen = 0;
-
-        if(hppWellknownCoreStr != NULL) cbWellknownCoreLen = strlen(hppWellknownCoreStr);
-        pchBuf = malloc(cbVarLen + cbWellknownCoreLen + 2);   // One extra comma + null byte
-
-        if(pchBuf != NULL && cbVarLen != -1)
-        {
-            if(hppWellknownCoreStr != NULL) strcpy(pchBuf, hppWellknownCoreStr);
-            else pchBuf[0] = 0;
-
-            if(pchBuf[0] != 0 && cbVarLen > 0) strcat(pchBuf, ",");
-            if(hppHideVarResources == false) hppVarGetAll(pchBuf + strlen(pchBuf), cbVarLen + 1, "",  "\\1,</var/%s>");
-
-            //TODO: Do somethng more smart with multicaset - if(apMessageInfo->mSockAddr.mFields.m8[0] != 0xff) ...
-
-            if(strlen(pchBuf) > 0)
-                hppCoapRespondFormattedString(apMessage, apMessageInfo, pchBuf, OT_COAP_OPTION_CONTENT_FORMAT_LINK_FORMAT);
-            else 
-                hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_VALID);   // no Playload
-        }       
-        else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_REQUEST_TOO_LARGE);
-
-        free(pchBuf);
-#else
-
-        if(hppWellknownCoreStr != NULL)
-            hppCoapRespondFormattedString(apMessage, apMessageInfo, hppWellknownCoreStr, OT_COAP_OPTION_CONTENT_FORMAT_LINK_FORMAT);
-#endif
+        bSuccess = hppAsyncSetCoapContext(&theCoapMessageContext, true);   // executed with the next async operation
+        if(bSuccess) bSuccess = hppAsyncVarGetWellKnownCore();
         
-    }
+        // Make sure to unlock the parser mutex after any hppAsyncXXX(...) call with abSyncWithNext=true if hppAsyncParseVarCoapResponse(...) was not executed.
+        if(!bSuccess) hppAsyncParseVar("");
+
+        hppCoapRespondEmpty(apMessage, apMessageInfo);
+    }    
 }
 
 
@@ -849,9 +838,9 @@ bool hppAddAddress(const char* aAddress)
 
         // (Re-)regiter address
         if(tolower(aAddress[0]) == 'f' && tolower(aAddress[1]) == 'f') 
-            theError = otIp6SubscribeMulticastAddress(thread_ot_instance_get(), &myNetifAddress.mAddress);
+            theError = otIp6SubscribeMulticastAddress(hppOpenThreadInstance, &myNetifAddress.mAddress);
         else
-            theError = otIp6AddUnicastAddress(thread_ot_instance_get(), &myNetifAddress);
+            theError = otIp6AddUnicastAddress(hppOpenThreadInstance, &myNetifAddress);
 
         if(theError == OT_ERROR_NONE) return true; 
     }
@@ -863,6 +852,7 @@ bool hppAddAddress(const char* aAddress)
 // aszText_out mut be 40 bytes long to hold the address string including terminating null byte.
 // Returns aszText_out.
 // Does NOT check if aszText_out is NULL!
+// This does not require locking the thread mutex
 char* hppGetAddrString(const otIp6Address *apIp6Address, char* aszText_out)
 {
     char pTmp[6];
@@ -878,82 +868,74 @@ char* hppGetAddrString(const otIp6Address *apIp6Address, char* aszText_out)
     return aszText_out;
 }
 
+
 // -----------------------
 // Thread Callback Handler
 // -----------------------
 
-void hppThreadStateChangedCallback(uint32_t flags, void * pContext)
+static void hppThreadStateChangedCallback(uint32_t flags, void *context)
 {
-    if (flags & OT_CHANGED_THREAD_ROLE)
-    {
-        switch (otThreadGetDeviceRole(pContext))
-        {
-            case OT_DEVICE_ROLE_CHILD:
-            case OT_DEVICE_ROLE_ROUTER:
-            case OT_DEVICE_ROLE_LEADER:
-                break;
+	struct openthread_context *ot_context = context;
 
-            case OT_DEVICE_ROLE_DISABLED:
-            case OT_DEVICE_ROLE_DETACHED:
-            default:
-                break;
-        }
-    }
+	if (flags & OT_CHANGED_THREAD_ROLE)
+	{
+		switch (otThreadGetDeviceRole(ot_context->instance)) 
+		{
+			case OT_DEVICE_ROLE_CHILD:
+			case OT_DEVICE_ROLE_ROUTER:
+			case OT_DEVICE_ROLE_LEADER:
+				break;
+
+			case OT_DEVICE_ROLE_DISABLED:
+			case OT_DEVICE_ROLE_DETACHED:
+			default:
+				break;
+		}
+	}
 }
 
 
-// -----------------------------
-// Default CoAP Callback Handler
-// -----------------------------
-
-#ifndef __INCL_HPP_VAR_
-
-static void hppCoapDefaultHandler(void* apContext, otMessage* apMessage, const otMessageInfo* apMessageInfo)
-{
-}
-
-#endif
-
-
 // -----------------------------------------
-// Coap Bindings for Varables and H++ Parser 
+// Coap Bindings for Varables and H++ Parser
 // -----------------------------------------
-
-// Common code
-
-#ifdef __INCL_HPP_PARSER_
 
 // Store current coap Message and MessagInfo pointers and initialize palyoad and content type variables
-static void hppPrepareHppCallContext(otMessage* apMessage, const otMessageInfo* apMessageInfo)
+static bool hppAsyncParseWithCoAPContext(const char* aszVarName, otMessage* apMessage, const otMessageInfo* apMessageInfo)
 {
+    hppCoapMessageContext theCoapMessageContext;
     char szNumeric[HPP_NUMERIC_MAX_MEM];
     int cbPayloadLength = hppCoapGetPayloadLenght(apMessage);
- 
+    bool bSuccess;
+    char* pchPayload;
+
+    hppCoapStoreMessageContext(&theCoapMessageContext, apMessage, apMessageInfo);
+
     // Read playload
-    if(cbPayloadLength > 0)
+    if(cbPayloadLength > 0 && cbPayloadLength <= HPP_MAX_PAYLOAD_LENGTH)
     {
-        char* pchBuf = hppVarPut("0000:payload", hppNoInitValue, cbPayloadLength);
-        if(pchBuf != NULL) hppCoapReadPayload(apMessage, pchBuf, cbPayloadLength);
+        pchPayload = (char*) malloc(cbPayloadLength);
+        if(pchPayload != NULL) 
+        {
+            hppCoapReadPayload(apMessage, pchPayload, cbPayloadLength);
+            bSuccess = hppAsyncVarPut("0000:payload", pchPayload, cbPayloadLength, true);
+            free(pchPayload);
+        }
+        else bSuccess = false;
     }
-    else hppVarPut("0000:payload", "", 0);
+    else bSuccess = hppAsyncVarPut("0000:payload", "", 0, true);
 
-    // Read content format
-    hppVarPutStr("0000:content_format", hppI2A(szNumeric, hppGetCoapContentFormat(apMessage)), NULL);
+    if(!bSuccess) return false;         // do not attempt to parse the methode without payload variable
 
-    hppMyCurrentCoapContext.pCurrentCoapMessage = apMessage;
-    hppMyCurrentCoapContext.pCurrentCoapMessageInfo = apMessageInfo;
-    hppMyCurrentCoapContext.bCurrentCoapResponseDone = false;
+    if(bSuccess) bSuccess = hppAsyncVarPutStr("0000:content_format", hppI2A(szNumeric, hppGetCoapContentFormat(apMessage)), true);
+    if(bSuccess) bSuccess = hppAsyncSetCoapContext(&theCoapMessageContext, true);   // executed with the next async operation
+    if(bSuccess) bSuccess = hppAsyncParseVarCoapResponse(aszVarName);
+    
+    // Make sure to unlock the parser mutex after any hppAsyncXXX(...) call with abSyncWithNext=true if hppAsyncParseVarCoapResponse(...) was not executed.
+    if(!bSuccess) hppAsyncParseVar(""); 
+
+    return bSuccess;
 }
 
-// Restore current coap Message and MessagInfo pointers from apCurrentCoapContext               
-static void hppInvalidateHppCallContext()
-{
-    hppMyCurrentCoapContext.pCurrentCoapMessage = NULL;
-    hppMyCurrentCoapContext.pCurrentCoapMessageInfo = NULL;
-    hppMyCurrentCoapContext.bCurrentCoapResponseDone = true; 
-}
-
-#endif
 
 // ------------------------------------
 // Handler for PUT on /var_hide
@@ -962,47 +944,33 @@ static void hppInvalidateHppCallContext()
 // Makes /var/x visible and changeable if a matching PW is sent (PUT).
 // The PW is stored in var "Var_Hide_PW". Otherwise the default PW HPP_HIDE_VAR_RESOURCE_PASSWORD is used.    
 
-#ifdef __INCL_HPP_VAR_
-
 static void hppCoapHandler_VarHide(void* apContext, otMessage* apMessage, const otMessageInfo* apMessageInfo)
 {
     if(hppIsCoapPUT(apMessage))
     {
         char* pchBuf;
-        const char* pchPW;
-        size_t cb;
+        int cb = hppCoapGetPayloadLenght(apMessage);
 
-        pchPW = hppVarGet("Var_Hide_PW", &cb);
-        if(pchPW == NULL)
+    	pchBuf = malloc(cb + 1);
+        if(pchBuf != NULL)
         {
-            pchPW = HPP_HIDE_VAR_RESOURCE_PASSWORD; 
-            cb = strlen(HPP_HIDE_VAR_RESOURCE_PASSWORD);
+            if(hppCoapReadPayload(apMessage, pchBuf, cb) == cb)
+            {
+                pchBuf[cb] = 0;
+                hppAsyncVarHide(pchBuf);
+            }
+
+            hppCoapConfirm(apMessage, apMessageInfo);
+            free(pchBuf);
         }
-
-    	pchBuf = malloc(cb);
-        if(pchBuf == NULL) return;
-        hppHideVarResources = true;
-
-        if(hppCoapReadPayload(apMessage, pchBuf, cb) == cb)
-        {
-            if(memcmp(pchBuf, pchPW, cb) == 0) hppHideVarResources = false;
-        }
-
-        hppCoapConfirm(apMessage, apMessageInfo);
-
-        free(pchBuf);
     }
 }
-
-#endif
 
 
 // ------------------------------------
 // Handler for PUT,GET,POST on /var/xxx  
 // ------------------------------------
 
-
-#ifdef __INCL_HPP_VAR_
 
 static void hppCoapVarHandler(void* pContext, otMessage* apMessage, const otMessageInfo* apMessageInfo)
 {
@@ -1022,83 +990,61 @@ static void hppCoapVarHandler(void* pContext, otMessage* apMessage, const otMess
             const char* szVarPath;
 
             otCoapCode theCoapResultCode = OT_COAP_CODE_BAD_REQUEST;
-            szVarPath = hppVarGetKey(szPath + 4, false);     // Don non case senesitve search for the varibale key
-            if(szVarPath == NULL) szVarPath = szPath + 4;    // New variable?
+            szVarPath = szPath + 4;    // New variable?
  
             if(hppIsCoapPUT(apMessage) && cbPayloadLength > 0)
             {
-                bool bNewVar = false;
                 theCoapResultCode = OT_COAP_CODE_REQUEST_TOO_LARGE;   // if no success
 
                 if(cbPayloadLength <= HPP_MAX_PAYLOAD_LENGTH)
                 {
-                    if(hppVarGet(szVarPath, NULL) == NULL) bNewVar = true;
                     pchPayload = (char*) malloc(cbPayloadLength);
                     if(pchPayload != NULL) 
                     {
                         hppCoapReadPayload(apMessage, pchPayload, cbPayloadLength);
-                        if(hppVarPut(szVarPath, pchPayload, cbPayloadLength) != NULL)
-                        {
-                            if(bNewVar) theCoapResultCode = OT_COAP_CODE_CREATED;
-                            else theCoapResultCode = OT_COAP_CODE_CHANGED;
-                        }
-                    }
-                    
-                    free(pchPayload);
-                }
 
-                hppCoapConfirmWithCode(apMessage, apMessageInfo, theCoapResultCode);
+                        if(hppAsyncVarPutFromUri(szVarPath, pchPayload, cbPayloadLength) == true)
+                        {
+                            theCoapResultCode = OT_COAP_CODE_CHANGED;
+                        }
+                        else theCoapResultCode = OT_COAP_CODE_PRECONDITION_FAILED;   // Parser busy 
+
+                        free(pchPayload);
+                    }
+
+                    hppCoapConfirmWithCode(apMessage, apMessageInfo, theCoapResultCode);
+                }
             }
             else if(hppIsCoapGET(apMessage))
             {
-                const char* pchValue;
-                size_t cbLength = 0;
-                pchValue = hppVarGet(szVarPath, &cbLength);
+                hppCoapMessageContext theCoapMessageContext;
+                bool bSuccess;
 
-                if(pchValue != NULL)
-                {
-                    if(hppCoapRespond(apMessage, apMessageInfo, pchValue, cbLength, OT_COAP_OPTION_CONTENT_FORMAT_TEXT_PLAIN) != OT_ERROR_NONE);
-                    else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_REQUEST_TOO_LARGE); 
-                }
-                else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_NOT_FOUND); 
+                hppCoapStoreMessageContext(&theCoapMessageContext, apMessage, apMessageInfo);
+                bSuccess = hppAsyncSetCoapContext(&theCoapMessageContext, true);   // executed with the next async operation
+                if(bSuccess) bSuccess = hppAsyncVarGetFromUriCoapResponse(szVarPath);
+
+                // Make sure to unlock the parser mutex after any hppAsyncXXX(...) call with abSyncWithNext=true if hppAsyncParseVarCoapResponse(...) was not executed.
+                if(!bSuccess) hppAsyncParseVar("");
+
+                hppCoapRespondEmpty(apMessage, apMessageInfo);
             }
-            if(hppIsCoapDELETE(apMessage))
+            else if(hppIsCoapDELETE(apMessage))
             {
-                hppVarDelete(szVarPath);
-                hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_DELETED); 
-            }
+                if(hppAsyncVarDelete(szVarPath)) theCoapResultCode = OT_COAP_CODE_DELETED;
+                else theCoapResultCode = OT_COAP_CODE_PRECONDITION_FAILED;   // Parser busy 
 
-#ifdef __INCL_HPP_PARSER_
+                hppCoapConfirmWithCode(apMessage, apMessageInfo, theCoapResultCode);
+            }
             else if(hppIsCoapPOST(apMessage))
             {
-                const char* pchCode;
-                char* pchResult;
-                pchCode = hppVarGet(szVarPath, NULL);
-
-                if(pchCode != NULL) 
+                if(hppAsyncParseWithCoAPContext(szVarPath, apMessage, apMessageInfo)) 
                 {
-                    // Store current coap Message and MessagInfo pointers and initialize palyoad and content type variables
-                    hppPrepareHppCallContext(apMessage, apMessageInfo);       
-                    pchResult = hppParseExpression(pchCode, "ReturnWithError");
-
-                    if(pchResult != NULL)
-                    {
-                        if(hppMyCurrentCoapContext.bCurrentCoapResponseDone == false)    // Only automatically respond if there was no programmatical response
-                        {
-                            if(pchResult[0] != 0) hppCoapRespondString(apMessage, apMessageInfo, pchResult);
-                            else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_VALID);   // no Playload
-                        }
-                    }
-                    else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_VALID);
-
-                    hppVarDelete("ReturnWithError");
-
-                    // Invalidate current coap Message and MessagInfo pointers 
-                    hppInvalidateHppCallContext();
-                } 
-                else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_NOT_FOUND); 
+                    if(otCoapMessageGetTokenLength(apMessage) == 0) hppCoapRespondString(apMessage, apMessageInfo, "error: token expected");
+                    else hppCoapRespondEmpty(apMessage, apMessageInfo);     // Delayed respose
+                }
+                else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_PRECONDITION_FAILED);   // Parser queue full 
             }
-#endif
             else hppCoapConfirmWithCode(apMessage, apMessageInfo, theCoapResultCode);  // bad request
         }
     }
@@ -1106,92 +1052,56 @@ static void hppCoapVarHandler(void* pContext, otMessage* apMessage, const otMess
 	free(szPath);
 }
 
-#endif
-
 
 // ----------------------------------------------------
 // Handler function for H++ coap requests and responses
 // ----------------------------------------------------
 
-#ifdef __INCL_HPP_PARSER_
-
-// Handler functions for coap resources added with 'coap_add_URI'
+// Handler functions for coap resources added with 'coap_add_resource'
 static void hppCoapGenericRequestHandler(void* apContext, otMessage* apMessage, const otMessageInfo* apMessageInfo)
 {
-    const char* pchCode;
-    char* pchResult;
-             
     if(apContext == NULL) return;   // unknown H++ function
 
-    pchCode = hppVarGet((char*)apContext, NULL);
-    
-    if(pchCode != NULL)
+    if(hppAsyncParseWithCoAPContext((const char*)apContext, apMessage, apMessageInfo))
     {
-        hppPrepareHppCallContext(apMessage, apMessageInfo);
-        pchResult = hppParseExpression(pchCode, "ReturnWithoutError");
-
-        if(hppMyCurrentCoapContext.bCurrentCoapResponseDone == false && apMessageInfo->mSockAddr.mFields.m8[0] != 0xff)    // never automatically respond to a multicast
-        {
-            if(pchResult != NULL) hppCoapConfirm(apMessage, apMessageInfo);
-            else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_INTERNAL_ERROR);
-        }
-
-        // Invalidate current coap Message and MessagInfo pointers
-        hppInvalidateHppCallContext();
+        if(otCoapMessageGetTokenLength(apMessage) == 0) hppCoapRespondString(apMessage, apMessageInfo, "error: token expected");
+        else hppCoapRespondEmpty(apMessage, apMessageInfo);     // Delayed respose
     }
-    else 
-    {
-        // never automatically respond to a multicast
-        if(apMessageInfo->mSockAddr.mFields.m8[0] != 0xff) hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_NOT_FOUND);
-    }
-
-    hppVarDelete("ReturnWithoutError");   // result not used
+    else hppCoapConfirmWithCode(apMessage, apMessageInfo, OT_COAP_CODE_PRECONDITION_FAILED);   // Parser queue full
 }
 
 
 // Coap response handler parsing H++ code for 'coap_GET' and 'coap_POST'
 static void hppCoapGenericResponseHandler(void* apContext, otMessage* apMessage, const otMessageInfo* apMessageInfo, otError aError)
-{
-    const char* pchCode;
-    char* pchResult;
-             
+{             
     if(apContext == NULL) return;   // unknown H++ function
 
-    pchCode = hppVarGet((char*)apContext, NULL);
-
-    if(pchCode != NULL)
-    {
-        hppPrepareHppCallContext(apMessage, apMessageInfo);
-        pchResult = hppParseExpression(pchCode, "ReturnWithoutError");
-        if(pchResult != NULL) hppVarDelete("ReturnWithoutError");   // Not used
-
-        // Invalidate current coap Message and MessagInfo pointers
-        hppInvalidateHppCallContext();
-    }
+    hppAsyncParseWithCoAPContext((const char*)apContext, apMessage, apMessageInfo);   
 }
 
 
 // Handler for H++ triggered connection events
 void hppCoapsConnectedHppHandler(bool abConnected, void *apContext) 
-{
-    const char* pchCode;
-    char* pchResult;
-             
+{           
     if(apContext != NULL) 
     {
-        pchCode = hppVarGet((char*)apContext, NULL);
-
-        if(pchCode != NULL)
+        bool bSuccess = hppAsyncVarPutStr("0000:connected",  abConnected ? "true" : "false", true);
+        
+        if(bSuccess) 
         {
-            hppVarPutStr("0000:connected", abConnected ? "true" : "false", NULL);
+            bSuccess = hppAsyncParseVar((const char*)apContext);
 
-            pchResult = hppParseExpression(pchCode, "ReturnWithoutError");
-            if(pchResult != NULL) hppVarDelete("ReturnWithoutError");   // Not used
-        }
+            // Make sure to unlock the parser mutex after any hppAsyncXXX(...) call with abSyncWithNext=true if hppAsyncParseVarCoapResponse(...) was not executed.
+            if(!bSuccess) hppAsyncParseVar("");
+        }   
     }
 
     hppCoapsConnectedDefaultHandler(abConnected, apContext);
 }
+
+
+// cli_XXXX commands     --> make Zephyr crash, need to find out why or use Zephyr shell commands
+/*
 
 // ----------------------
 // Handler for CLI output
@@ -1203,17 +1113,18 @@ static int hppCliOutputHandler(const char *apCliBuf, uint16_t aBufLength, void *
     if(apContext == NULL) return 0;   // unknown H++ function
     if(apCliBuf == NULL) return 0;   // Nothing to process   
 
-    pchCode = hppVarGet((char*)apContext, NULL);
+    pchCode = hppSyncVarGet((char*)apContext, NULL);
     
     if(pchCode != NULL)
     {
-        hppVarPut("0000:cli_output", apCliBuf, aBufLength);
-        hppParseExpression(pchCode, "ReturnWithoutError");
-        hppVarDelete("ReturnWithoutError");   // result not used
+        hppSyncVarPut("0000:cli_output", apCliBuf, aBufLength);
+        hppSyncParseExpression(pchCode, "ReturnWithoutError");
+        hppSyncVarDelete("ReturnWithoutError");   // result not used
     }
 
     return aBufLength;
 }
+
 
 // -----------------------------------------
 // Handler for user CLI user command parsing
@@ -1228,23 +1139,23 @@ static void hppCliCommandHandler(int argc, char *argv[], const char* aszCmd)
     int iArg = 0;
     
     if(argv == NULL) return;   
-    pchCode = hppVarGet("cli_parse", NULL);
+    pchCode = hppSyncVarGet("cli_parse", NULL);
     
     if(pchCode != NULL)
     {
         sprintf(szParamName, HPP_PARAM_PREFIX, 0);
-        hppVarPutStr("0000:command", aszCmd, NULL);
-        hppVarPutStr("0000:argc", hppI2A(szNumeric, argc), NULL);
+        hppSyncVarPutStr("0000:command", aszCmd, NULL);
+        hppSyncVarPutStr("0000:argc", hppI2A(szNumeric, argc), NULL);
 
-        do hppVarPutStr(szParamName, argv[iArg], NULL);
+        do hppSyncVarPutStr(szParamName, argv[iArg], NULL);
         while(++iArg < argc && ++szParamName[HPP_PARAM_PREFIX_LEN - 1] <='9'); 
 
-        hppParseExpression(pchCode, "ReturnWithoutError");
-        hppVarDelete("ReturnWithoutError");   // result not used
+        hppSyncParseExpression(pchCode, "ReturnWithoutError");
+        hppSyncVarDelete("ReturnWithoutError");   // result not used
     }
 }
 
-
+ 
 // CLI handers do not have context parameter. Therefore we need individual callback fundtions for all user definde clie commands
 //
 static void hppCliCommandHandler01(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[1].mName); }
@@ -1258,29 +1169,35 @@ static void hppCliCommandHandler08(uint8_t argc, char *argv[]) { hppCliCommandHa
 static void hppCliCommandHandler09(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[9].mName); }
 static void hppCliCommandHandler10(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[10].mName); }
 
+
 static void (*hppCliCommandHandlerList[HPP_MAX_CLI_COUNT])(uint8_t argc, char *argv[]) = {  hppCliCommandHandler01, hppCliCommandHandler02, hppCliCommandHandler03, 
                                                                                             hppCliCommandHandler04, hppCliCommandHandler05, hppCliCommandHandler06,
                                                                                             hppCliCommandHandler07, hppCliCommandHandler08, hppCliCommandHandler09,
                                                                                             hppCliCommandHandler10 };
+*/
 
 // Print string to CLI console with LF to CRLF translation. Adds  another CRLF if abNewLine is true. 
 void hppCliOutputStr(const char* aszText, bool abNewLine)
 {
     if(aszText == NULL) return; 
+
+    // The use of  otCliOutputFormat(...) makes Zephire crash  --> use printf(...)
     
     for(int i = 0; i < strlen(aszText); i++)
     {
-        if(aszText[i] == '\n') otCliOutputFormat("\r\n");
-        else otCliOutputFormat("%c", aszText[i]);
+        if(aszText[i] == '\n') otCliOutput("\r\n", 2);
+        //printf("\r\n");
+        else otCliOutput(aszText + i, 1);
+        //printf("%c", aszText[i]);
     }
 
-    if(abNewLine) otCliOutputFormat("\r\n");
+    if(abNewLine) otCliOutput("\r\n", 2);
 }
 
 // handler for 'hpp' command executing H++ code passed as parameters 
-static void hppCliHppCommandHandler(uint8_t argc, char *argv[])
+static void hppCliHppCommandHandler(void* apContext, uint8_t argc, char *argv[])
 {
-    char* pchResult;
+    //char* pchResult;
     char szCmd[HPP_MAX_CLI_HPP_CMD_LEN + 1];
 
     szCmd[0] = 0;
@@ -1291,10 +1208,7 @@ static void hppCliHppCommandHandler(uint8_t argc, char *argv[])
         szCmd[HPP_MAX_CLI_HPP_CMD_LEN] = 0;   // make sure it is always null terminated
     }  
 
-    pchResult = hppParseExpression(szCmd, "ReturnWithError");
-    
-    hppCliOutputStr(pchResult, true);
-    hppVarDelete("ReturnWithError");
+    if(!hppAsyncParseExpression(szCmd, true)) hppCliOutputStr("H++ parser queue full", true);
 }
      
 
@@ -1307,7 +1221,10 @@ static void hppCliHppCommandHandler(uint8_t argc, char *argv[])
 // respectiv parameter. 
 // The result is stored in the variable 'aszResultVarKey. Must return a pointer to the respective byte array of the result variable
 // and change 'apcbResultLen_Out' to the respective number of bytes     
-char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const char aszResultVarKey[], size_t* apcbResultLen_Out)
+//
+// This function is calles from the H++ parser and locks the thread mutex in case any OpenThread function is used.
+// No need to use the async hppVar methods (hppAsyncVarXXX). The hppVar mutex is already locked during H++ execution.
+static char* hppEvaluateOtFunction(char aszFunctionName[], char aszParamName[], const char aszResultVarKey[], size_t* apcbResultLen_Out)
 {
 	char szNumeric[HPP_NUMERIC_MAX_MEM];
     bool bSecure = false;
@@ -1330,7 +1247,9 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
         {
             bool bResult;
         
+            openthread_api_mutex_lock(hppOpenThreadContext);
             bResult = hppAddAddress(pchParam1);  // hppAddAddress returns false in case the address string is NULL
+            openthread_api_mutex_lock(hppOpenThreadContext);
             
             return hppVarPutStr(aszResultVarKey, bResult ? "true" : "false", apcbResultLen_Out);
         }
@@ -1340,7 +1259,9 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
             const otIp6Address *pIPaddr;
             char szAddr[40];
         
-            pIPaddr = otThreadGetMeshLocalEid(thread_ot_instance_get()); 
+            openthread_api_mutex_lock(hppOpenThreadContext);
+            pIPaddr = otThreadGetMeshLocalEid(hppOpenThreadInstance);
+            openthread_api_mutex_unlock(hppOpenThreadContext); 
            
             return hppVarPutStr(aszResultVarKey, hppGetAddrString(pIPaddr, szAddr), apcbResultLen_Out);
         }
@@ -1357,8 +1278,11 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
             if(pchParam1 == NULL) iNum = 0;
             else iNum = atoi(pchParam1); 
 
-            pUnicastAddr = otIp6GetUnicastAddresses(thread_ot_instance_get());  
-            pIPlocalEID = otThreadGetMeshLocalEid(thread_ot_instance_get());        
+            openthread_api_mutex_lock(hppOpenThreadContext);
+            pUnicastAddr = otIp6GetUnicastAddresses(hppOpenThreadInstance);  
+            pIPlocalEID = otThreadGetMeshLocalEid(hppOpenThreadInstance);  
+            openthread_api_mutex_unlock(hppOpenThreadContext);
+
             if(aszFunctionName[7] == 'g') { chMask = 0xE0; chValue = 0x20; }    // GUA
 
             while(pUnicastAddr != NULL)
@@ -1399,10 +1323,14 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
             char* pchParam2 = hppVarGet(aszParamName, NULL);
 
             if(pchParam2 == NULL) pchParam2 = "0";   // content format is plain text by default
-            if(hppMyCurrentCoapContext.pCurrentCoapMessage != NULL && hppMyCurrentCoapContext.pCurrentCoapMessageInfo != NULL)
-                theError = hppCoapRespond(hppMyCurrentCoapContext.pCurrentCoapMessage, hppMyCurrentCoapContext.pCurrentCoapMessageInfo, pchParam1, cbParam1, atoi(pchParam2));
 
-            hppMyCurrentCoapContext.bCurrentCoapResponseDone = true;    // do not autmoatically respond or acknowledge
+            openthread_api_mutex_lock(hppOpenThreadContext);
+            if(hppMyCurrentCoapMessageContext.mCoapMessageTokenLength != 0)
+            {
+                theError = hppCoapRespondTo(&hppMyCurrentCoapMessageContext, pchParam1, cbParam1, atoi(pchParam2));
+                hppMyCurrentCoapMessageContext.mHasResponded = 1;
+            }
+            openthread_api_mutex_unlock(hppOpenThreadContext);    
 
             return hppVarPutStr(aszResultVarKey, theError == OT_ERROR_NONE ? "true" : "false", apcbResultLen_Out);
         }
@@ -1419,42 +1347,35 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
 
             if(pchParam3 == NULL) pchParam3 = "0";   // content format is plain text by default
 
+            openthread_api_mutex_lock(hppOpenThreadContext);
             if(cbParam1 == sizeof(hppCoapMessageContext))
                 if(memcmp(((hppCoapMessageContext*)pchParam1)->szHeaderText, "context:", 9) == 0)
                     theError = hppCoapRespondTo((hppCoapMessageContext*)pchParam1, pchParam2, cbParam2, atoi(pchParam3));
-
-            //hppMyCurrentCoapContext.bCurrentCoapResponseDone = true;  --> this is not for the present context
+            openthread_api_mutex_unlock(hppOpenThreadContext);
 
             return hppVarPutStr(aszResultVarKey, theError == OT_ERROR_NONE ? "true" : "false", apcbResultLen_Out);
         }
         else if(strncmp(aszFunctionName, "_is_", 4) == 0)
         {
             bool bResult;
-            if(strcmp(aszFunctionName, "_is_get") == 0) bResult = hppIsCoapGET(hppMyCurrentCoapContext.pCurrentCoapMessage);  // hppIsCoapXXX returns false if aCoapMessage is NULL
-            else if(strcmp(aszFunctionName, "_is_put") == 0) bResult = hppIsCoapPUT(hppMyCurrentCoapContext.pCurrentCoapMessage);
-            else if(strcmp(aszFunctionName, "_is_post") == 0) bResult = hppIsCoapPOST(hppMyCurrentCoapContext.pCurrentCoapMessage);
-            else if(strcmp(aszFunctionName, "_is_delete") == 0) bResult = hppIsCoapDELETE(hppMyCurrentCoapContext.pCurrentCoapMessage);
-            else if(strcmp(aszFunctionName, "_is_multicast") == 0 && hppMyCurrentCoapContext.pCurrentCoapMessageInfo != NULL) bResult = hppMyCurrentCoapContext.pCurrentCoapMessageInfo->mSockAddr.mFields.m8[0] == 0xff;
+            if(strcmp(aszFunctionName, "_is_get") == 0) bResult = (hppMyCurrentCoapMessageContext.mCoapCode == OT_COAP_CODE_GET);
+            else if(strcmp(aszFunctionName, "_is_put") == 0) bResult = (hppMyCurrentCoapMessageContext.mCoapCode == OT_COAP_CODE_PUT);
+            else if(strcmp(aszFunctionName, "_is_post") == 0) bResult = (hppMyCurrentCoapMessageContext.mCoapCode == OT_COAP_CODE_POST);
+            else if(strcmp(aszFunctionName, "_is_delete") == 0) bResult = (hppMyCurrentCoapMessageContext.mCoapCode == OT_COAP_CODE_DELETE);
+            else if(strcmp(aszFunctionName, "_is_multicast") == 0) bResult = (hppMyCurrentCoapMessageContext.mMessageInfo.mSockAddr.mFields.m8[0] == 0xff);
             else return NULL;
             
             return hppVarPutStr(aszResultVarKey, bResult ? "true" : "false", apcbResultLen_Out);
         }
         else if(strcmp(aszFunctionName, "_context") == 0)   // no parameters
         {
-            hppCoapMessageContext myCoapMessageContext;
-
-            if(hppMyCurrentCoapContext.pCurrentCoapMessage != NULL && hppMyCurrentCoapContext.pCurrentCoapMessageInfo != NULL)
+            if(hppMyCurrentCoapMessageContext.mCoapMessageTokenLength != 0)
             {
-                hppCoapStoreMessageContext(&myCoapMessageContext, hppMyCurrentCoapContext.pCurrentCoapMessage, hppMyCurrentCoapContext.pCurrentCoapMessageInfo);
                 *apcbResultLen_Out = sizeof(hppCoapMessageContext);
-            }
-            else 
-            {
-                strcpy(myCoapMessageContext.szHeaderText, "error");
-                *apcbResultLen_Out = 5;
+                return hppVarPut(aszResultVarKey, (const char*) &hppMyCurrentCoapMessageContext, *apcbResultLen_Out);
             }
 
-            return hppVarPut(aszResultVarKey, (const char*) &myCoapMessageContext, *apcbResultLen_Out);
+            return hppVarPutStr(aszResultVarKey, "error", apcbResultLen_Out);
         }
         else if(strcmp(aszFunctionName, "_set_cert") == 0 && bSecure)  // X509Cert, PrivateKey,  RootCert, connected handler
         {
@@ -1467,7 +1388,10 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
             aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '4';
             char* pchParam4 = hppVarGet(aszParamName, NULL);
 
+            openthread_api_mutex_lock(hppOpenThreadContext);
             theError = hppCreateCoapsContextWithCert(pchParam1, pchParam2, pchParam3, hppCoapsConnectedHppHandler, (void*)hppVarGetKey(pchParam4, true));
+            openthread_api_mutex_unlock(hppOpenThreadContext);
+            
             return hppVarPutStr(aszResultVarKey, theError == OT_ERROR_NONE ? "true" : "false", apcbResultLen_Out);
         }
         else if(strcmp(aszFunctionName, "_set_psk") == 0 && bSecure)  // IdentityName, Password, connected handler
@@ -1479,7 +1403,10 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
             aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '3';
             char* pchParam3 = hppVarGet(aszParamName, NULL);
           
+            openthread_api_mutex_lock(hppOpenThreadContext);
             theError = hppCreateCoapsContextWithPSK(pchParam1, pchParam2, hppCoapsConnectedHppHandler, (void*)hppVarGetKey(pchParam3, true));
+            openthread_api_mutex_unlock(hppOpenThreadContext);
+
             return hppVarPutStr(aszResultVarKey, theError == OT_ERROR_NONE ? "true" : "false", apcbResultLen_Out);
         }
         else if(strcmp(aszFunctionName, "_connect") == 0 && bSecure)  // peer IPv6 address, connected handler
@@ -1489,17 +1416,26 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
             aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '2';
             char* pchParam2 = hppVarGet(aszParamName, NULL);
           
+            openthread_api_mutex_lock(hppOpenThreadContext);
             theError = hppCoapsConnect(pchParam1, hppCoapsConnectedHppHandler, (void*)hppVarGetKey(pchParam2, true));
+            openthread_api_mutex_unlock(hppOpenThreadContext);
+
             return hppVarPutStr(aszResultVarKey, theError == OT_ERROR_NONE ? "DTLS" : "invalid", apcbResultLen_Out);
         }
         else if(strcmp(aszFunctionName, "_disconnect") == 0 && bSecure) 
         {
+            openthread_api_mutex_lock(hppOpenThreadContext);
             hppCoapsDisconnect();
+            openthread_api_mutex_unlock(hppOpenThreadContext);
+
             return hppVarPutStr(aszResultVarKey, "true", apcbResultLen_Out);
         }
         else if(strcmp(aszFunctionName, "_stop") == 0 && bSecure) 
         {
+            openthread_api_mutex_lock(hppOpenThreadContext);
             hppDeleteCoapsContext();
+            openthread_api_mutex_unlock(hppOpenThreadContext);
+
             return hppVarPutStr(aszResultVarKey, "true", apcbResultLen_Out);
         }
         else
@@ -1525,18 +1461,32 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
 
 
             if(strcmp(aszFunctionName, "_put") == 0)  // addr, path, payload[, confirm, confirm_handler]  
+            {
+                openthread_api_mutex_lock(hppOpenThreadContext);
                 theError = hppCoapSend(pchParam1, pchParam2, pchParam3, cbParam3, OT_COAP_CODE_PUT, *pchParam4 == 't' ? hppCoapGenericResponseHandler : NULL, (void*)hppVarGetKey(pchParam5, true), *pchParam4 == 't' ? true : false);
-            else if(strcmp(aszFunctionName, "_get") == 0)  // addr, path, handler, confirm  
+                openthread_api_mutex_unlock(hppOpenThreadContext);
+            }
+            else if(strcmp(aszFunctionName, "_get") == 0)  // addr, path, handler, confirm
+            {  
+                openthread_api_mutex_lock(hppOpenThreadContext);
                 theError = hppCoapSend(pchParam1, pchParam2, NULL, 0, OT_COAP_CODE_GET, hppCoapGenericResponseHandler, (void*)hppVarGetKey(pchParam3, true), *pchParam4 == 't' ? true : false);
+                openthread_api_mutex_unlock(hppOpenThreadContext);
+            }
             else if(strcmp(aszFunctionName, "_post") == 0)  // addr, path, payload, handler, confirm
+            {
+                openthread_api_mutex_lock(hppOpenThreadContext);
                 theError = hppCoapSend(pchParam1, pchParam2, pchParam3, cbParam3, OT_COAP_CODE_POST, hppCoapGenericResponseHandler, (void*)hppVarGetKey(pchParam4, true), *pchParam5 == 't' ? true : false);
+                openthread_api_mutex_unlock(hppOpenThreadContext);
+            }
             else if(strcmp(aszFunctionName, "_add_resource") == 0) // path extension, resource type (e.g. rt=xyz), handler
             {
                 const char* pchKey = hppVarGetKey(pchParam3, true);
                 
                 if(pchKey != NULL)
                 {
+                    openthread_api_mutex_lock(hppOpenThreadContext);
                     if(hppCoapAddResource(pchParam1, pchParam2, hppCoapGenericRequestHandler, (void*)pchKey, bSecure)) theError = OT_ERROR_NONE;
+                    openthread_api_mutex_unlock(hppOpenThreadContext);
                 }
             } 
             else return NULL;    
@@ -1545,7 +1495,31 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
         }
     }
 
-     // cli_XXXX commands
+
+    // cli_XXXX commands
+
+    if(strncmp(aszFunctionName, "cli_", 4) == 0)
+    {
+        size_t cbParam1;
+        char* pchParam1 = hppVarGet(aszParamName, &cbParam1);
+
+        if(strcmp(aszFunctionName, "cli_put") == 0)    // cmd_string
+        {   
+            if(pchParam1 != NULL) otCliConsoleInputLine(pchParam1, cbParam1);
+
+            return hppVarPutStr(aszResultVarKey, pchParam1 != NULL ? "true" : "false", apcbResultLen_Out);
+        }
+        else if(strcmp(aszFunctionName, "cli_writeln") == 0)    // cmd_name, callback_function
+        {
+            hppCliOutputStr(pchParam1, true);
+
+            return hppVarPutStr(aszResultVarKey, pchParam1 != NULL ? "true" : "false", apcbResultLen_Out);
+        }
+    }
+
+
+    // cli_XXXX commands     --> make Zephyr crash, need to find out why or use Zephyr shell commands
+    /*
     if(strncmp(aszFunctionName, "cli_", 4) == 0)
     {
         size_t cbParam1;
@@ -1555,8 +1529,8 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
         {
             aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '2';
             char* pchParam2 = hppVarGet(aszParamName, NULL);
-            void* szKey = (void*)hppVarGetKey(pchParam2, true);                      // Get H++ fuction key 
-            otCliConsoleInit(thread_ot_instance_get(), hppCliOutputHandler, szKey);  // Set CLI Output Handler (Handler will not no anythin if szKey == NULL)
+            void* szKey = (void*)hppVarGetKey(pchParam2, true);                      // Get H++ fuction key
+            if(szKey != NULL) otCliConsoleInit(hppOpenThreadInstance, hppCliOutputHandler, szKey);  // Set CLI Output Handler
 
             if(pchParam1 != NULL) otCliConsoleInputLine(pchParam1, cbParam1);    // CLI Output Handler must be set before 
 
@@ -1589,6 +1563,7 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
             else return hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
         }
     }
+    */
 
     return NULL;
 }		
@@ -1598,81 +1573,80 @@ char* hppEvaluateCoapFunction(char aszFunctionName[], char aszParamName[], const
 // Poll function regularly called by H++ interpreter
 // -------------------------------------------------
 
-void hppThreadPollFunction(struct hppParseExpressionStruct* apParseContext, enum hppExternalPollFunctionEventEnum aPollFunctionEvent)
+static void hppThreadPollFunction(struct hppParseExpressionStruct* apParseContext, enum hppExternalPollFunctionEventEnum aPollFunctionEvent)
 {
     if(aPollFunctionEvent == hppExternalPollFunctionEvent_Poll && hppThreadTimeoutTime != 0)
     {
+        openthread_api_mutex_lock(hppOpenThreadContext);
         if(otPlatAlarmMilliGetNow() - apParseContext->uiExternalTimer > hppThreadTimeoutTime)
             apParseContext->eReturnReason = hppReturnReason_Timeout;   // Stop H++ exection with timeout error
+        openthread_api_mutex_unlock(hppOpenThreadContext);
     }
     else if(aPollFunctionEvent == hppExternalPollFunctionEvent_Begin)
     {
         // Remember start time
+        openthread_api_mutex_lock(hppOpenThreadContext);
         apParseContext->uiExternalTimer = otPlatAlarmMilliGetNow();
+        openthread_api_mutex_unlock(hppOpenThreadContext);
     }
     else if(aPollFunctionEvent == hppExternalPollFunctionEvent_End)
     {
         // Keep track of the longest execution time
+        openthread_api_mutex_lock(hppOpenThreadContext);
         uint32_t uiTimeDiff = otPlatAlarmMilliGetNow() - apParseContext->uiExternalTimer;
+        openthread_api_mutex_unlock(hppOpenThreadContext);
+
         if(hppThreadMaxTimeMeasured < uiTimeDiff) hppThreadMaxTimeMeasured = uiTimeDiff;
     }
 }
 
-#endif
 
-// ----------------------------------
-// Thread Initialization on nRF 52840
-// ----------------------------------
+// ---------------------
+// Thread CLI Output
+// ---------------------
 
-static void hppThreadInit()
+static int hppCliOutputHandler(const char *apCliBuf, uint16_t aBufLength, void *apContext)
 {
-	uint32_t error_code;
-	ret_code_t err_code;
-	otError error;
-    thread_configuration_t thread_configuration =
+    if(apCliBuf == NULL) return 0;   // Nothing to process   
+
+    for(int i = 0; i < aBufLength; i++)
     {
-        .radio_mode            = THREAD_RADIO_MODE_RX_ON_WHEN_IDLE,
-        .autocommissioning     = true,
-        .default_child_timeout = 10,
-    };
-	
+        //if(apCliBuf[i] == '\n') printf("\r\n");
+        //else 
+        printf("%c", apCliBuf[i]);
+    }
 
-	// Needed for Thread to work?  
-    // TODO: Check if this block can be moved to hppNRF527840.c
-	err_code = NRF_LOG_INIT(NULL);
-    APP_ERROR_CHECK(err_code);
-    NRF_LOG_DEFAULT_BACKENDS_INIT();
+    hppZephyrUsbSend(apCliBuf, aBufLength);
 
-    error_code = app_timer_init();
-    APP_ERROR_CHECK(error_code);
+    return aBufLength;
+}
 
-	APP_SCHED_INIT(SCHED_EVENT_DATA_SIZE, SCHED_QUEUE_SIZE);   
-   
-   /*
-    thread_configuration.role = RX_ON_WHEN_IDLE;
-    thread_configuration.autocommissioning = true;
-    thread_configuration.poll_period = 2500;
-    thread_configuration.default_child_timeout = 10;
-	*/
 
-    thread_init(&thread_configuration);
-    thread_cli_init();
-    otSetStateChangedCallback(thread_ot_instance_get(), hppThreadStateChangedCallback, thread_ot_instance_get());
+// ---------------------
+// Thread Initialization
+// ---------------------
 
-    error = otCoapStart(thread_ot_instance_get(), OT_DEFAULT_COAP_PORT);
-    ASSERT(error == OT_ERROR_NONE);
+void hppThreadInit()
+{
+	hppOpenThreadContext = openthread_get_default_context();
+	hppOpenThreadInstance = hppOpenThreadContext->instance;
 
+	openthread_set_state_changed_cb(hppThreadStateChangedCallback);
+	openthread_start(hppOpenThreadContext);
+
+    // lock openthread mutex
+    openthread_api_mutex_lock(hppOpenThreadContext);
+
+    otCoapStart(hppOpenThreadInstance, OT_DEFAULT_COAP_PORT);
     hppCoapAddResource(".well-known/core", "", hppCoapHandler_Wellknown_Core, NULL, false);
-	
-#ifdef __INCL_HPP_VAR_
-	otCoapSetDefaultHandler(thread_ot_instance_get(), hppCoapVarHandler, NULL);
+	otCoapSetDefaultHandler(hppOpenThreadInstance, hppCoapVarHandler, NULL);
     hppCoapAddResource("var_hide", NULL, hppCoapHandler_VarHide, NULL, false);      // NULL in second parameter means not discoverable
-#else
-    otCoapSetDefaultHandler(thread_ot_instance_get(), hppCoapDefaultHandler, NULL);
-#endif
 
-#ifdef __INCL_HPP_PARSER_
-    hppAddExternalFunctionLibrary(hppEvaluateCoapFunction);
+    // The H++ function library callback in this file locks the openthread mutex if an openthread API function is called. 
+    hppSyncAddExternalFunctionLibrary(hppEvaluateOtFunction);
+
+    // Init CLI and redirect CLI output  (openthread_start already inits the CLI but we need to redirect the output)
+    otCliConsoleInit(hppOpenThreadInstance, hppCliOutputHandler, NULL);
 
     hppCliCommandTable = (otCliCommand*) malloc(sizeof(otCliCommand));
     if(hppCliCommandTable != NULL)
@@ -1680,31 +1654,12 @@ static void hppThreadInit()
         hppCliCommandTableSize = 1;
         hppCliCommandTable[0].mName = "hpp";
         hppCliCommandTable[0].mCommand = hppCliHppCommandHandler;
-        otCliSetUserCommands(hppCliCommandTable, hppCliCommandTableSize);
+        otCliSetUserCommands(hppCliCommandTable, hppCliCommandTableSize, NULL);
     }
 
-    hppAddExternalPollFunction(hppThreadPollFunction);
+    // The H++ poll function  library in this file locks the openthread mutex for  openthread API functions calls.  
+    hppSyncAddExternalPollFunction(hppThreadPollFunction);
 
-#endif
+    // unlock openthread mutex    
+    openthread_api_mutex_unlock(hppOpenThreadContext);
 }
-
-
-
-// ---------------------------------
-// Main Loop for Thread on nRF 52840
-// ---------------------------------
-
-static void hppMainLoop()
-{
-	while (true)
-    {
-        thread_process();
-        app_sched_execute();
-
-        if (NRF_LOG_PROCESS() == false)
-        {
-            thread_sleep();
-        }
-    }
-}
-

@@ -17,7 +17,7 @@
 /* Dependencies: hppVarStorage.c										        */
 /* Dependencies: int is expected to be int32_t. Verify hppAtoX and hppXXtoA.    */
 /* ----------------------------------------------------------------------------	*/
-/* Copyright (c) 2018 - 2019, Arnulf Rupp							            */
+/* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
 /* All rights reserved.												            */
 /* 	                                                                            */
@@ -45,6 +45,7 @@
 /* ----------------------------------------------------------------------------	*/
 
 #include "../include/hppParser.h"
+#include "../include/hppVarStorage.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -88,7 +89,7 @@ char hppGetOperator(struct hppParseExpressionStruct* apParseContext)
 	const char *szCode = apParseContext->szCode;
 
 	// ignore whitspaces before the terminating operator
-	while(isspace(szCode[cbPos])) cbPos++;
+	while(isspace((int)szCode[cbPos])) cbPos++;
 
 	// Remember operator which terminated the expression and move the cbPos index behind the terminating delimiter (umnless it was null) 
 	chTerm = szCode[cbPos];
@@ -140,7 +141,7 @@ char hppGetExpression(struct hppParseExpressionStruct* apParseContext, char* asz
 	else abValue_Out = &bValue_Out_Int;                   // Do not allow values. E.g. begin '.' operator: names by start with a number.
 	
 	// ignore whitspaces before the terminating operator
-	while(isspace(szCode[cbPos])) cbPos++;
+	while(isspace((int)szCode[cbPos])) cbPos++;
 	
 	// ignore comment lines
 	while(szCode[cbPos] == '/')
@@ -149,7 +150,7 @@ char hppGetExpression(struct hppParseExpressionStruct* apParseContext, char* asz
 		{
 			cbPos++;
 			while(szCode[cbPos] != 10 && szCode[cbPos] != 0) cbPos++;
-			while(isspace(szCode[cbPos])) cbPos++;
+			while(isspace((int)szCode[cbPos])) cbPos++;
 		}
 	}
 	
@@ -170,7 +171,7 @@ char hppGetExpression(struct hppParseExpressionStruct* apParseContext, char* asz
 			if(memchr("1234567890.-", szCode[cbPos], 12) != NULL && *abValue_Out == true)
 				while(memchr("1234567890.", szCode[++cbValue], 11) != NULL);
 			else
-				while(isalnum(szCode[cbPos]) || szCode[cbPos] == '_') cbPos++;
+				while(isalnum((int)szCode[cbPos]) || szCode[cbPos] == '_') cbPos++;
 		}
 	}
 
@@ -512,7 +513,7 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 		else 
 		{	 
 			// Unitary opertors not evaluating the expression keeping 'aszResultVarKey' unchanged
-			if(islower(szExpresssion[0])) szExpresssion = szExpresssionWithPrefix;  // local variable or function 
+			if(islower((int)szExpresssion[0])) szExpresssion = szExpresssionWithPrefix;  // local variable or function 
 
 			// operators '::', '<' , '[', '.', ':type[' or leading '?'
 			// Some code branches use 'aszResultVarKey' to temporarily store parameter values. 
@@ -612,12 +613,12 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 									{
 										case hppBinaryType_uint8:  	*(unsigned char*)(pchArray + cbOffset) = hppAtoI(pchResult); break;
 										case hppBinaryType_int8:   	*(signed char*)(pchArray + cbOffset) = hppAtoI(pchResult); break;
-										case hppBinaryType_uint16: 	*(__hpp_packed uint16_t*)(pchArray + cbOffset) = hppAtoUI16(pchResult); break;
-										case hppBinaryType_int16:  	*(__hpp_packed int16_t*)(pchArray + cbOffset) = hppAtoI16(pchResult); break;
-										case hppBinaryType_uint32: 	*(__hpp_packed uint32_t*)(pchArray + cbOffset) = hppAtoUI32(pchResult); break;
-										case hppBinaryType_int32:  	*(__hpp_packed int32_t*)(pchArray + cbOffset) = hppAtoI32(pchResult); break;
+										case hppBinaryType_uint16: 	*(uint16_t*)(pchArray + cbOffset) = hppAtoUI16(pchResult); break;
+										case hppBinaryType_int16:  	*(int16_t*)(pchArray + cbOffset) = hppAtoI16(pchResult); break;
+										case hppBinaryType_uint32: 	*(uint32_t*)(pchArray + cbOffset) = hppAtoUI32(pchResult); break;
+										case hppBinaryType_int32:  	*(int32_t*)(pchArray + cbOffset) = hppAtoI32(pchResult); break;
 										case hppBinaryType_bool:  	*(pchArray + cbOffset) = pchResult != NULL ? (strcmp(pchResult, "true") == 0 ? 1 : 0) : 0; break;
-										case hppBinaryType_float:  	*(__hpp_packed float*)(pchArray + cbOffset) = hppAtoF(pchResult); break;
+										case hppBinaryType_float:  	*(float*)(pchArray + cbOffset) = hppAtoF(pchResult); break;
 										case hppBinaryType_double: 	{ 	double d = hppAtoF(pchResult);     // avoid alignment issue for ARM compiler
 																		memcpy(pchArray + cbOffset, &d, sizeof(double)); break; 
 																	}
@@ -636,12 +637,12 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 									{
 										case hppBinaryType_uint8:  	hppI2A(szNumeric, *(unsigned char*)(pchArray + cbOffset)); break;
 										case hppBinaryType_int8:   	hppI2A(szNumeric, *(signed char*)(pchArray + cbOffset)); break;
-										case hppBinaryType_uint16: 	hppUI16toA(szNumeric, *(__hpp_packed uint16_t*)(pchArray + cbOffset)); break;
-										case hppBinaryType_int16:  	hppI16toA(szNumeric, *(__hpp_packed int16_t*)(pchArray + cbOffset)); break;
-										case hppBinaryType_uint32: 	hppUI32toA(szNumeric, *(__hpp_packed uint32_t*)(pchArray + cbOffset)); break;
-										case hppBinaryType_int32:  	hppI32toA(szNumeric, *(__hpp_packed int32_t*)(pchArray + cbOffset)); break;
+										case hppBinaryType_uint16: 	hppUI16toA(szNumeric, *(uint16_t*)(pchArray + cbOffset)); break;
+										case hppBinaryType_int16:  	hppI16toA(szNumeric, *(int16_t*)(pchArray + cbOffset)); break;
+										case hppBinaryType_uint32: 	hppUI32toA(szNumeric, *(uint32_t*)(pchArray + cbOffset)); break;
+										case hppBinaryType_int32:  	hppI32toA(szNumeric, *(int32_t*)(pchArray + cbOffset)); break;
 										case hppBinaryType_bool:  	strcpy(szNumeric, *(pchArray + cbOffset) == 0 ? "false" : "true"); break;
-										case hppBinaryType_float:  	hppD2A(szNumeric, *(__hpp_packed float*)(pchArray + cbOffset)); break;
+										case hppBinaryType_float:  	hppD2A(szNumeric, *(float*)(pchArray + cbOffset)); break;
 										case hppBinaryType_double: 	{	double d;   // avoid alignment issue for ARM compiler 
 																		memcpy(&d, pchArray + cbOffset, sizeof(double));
 																		hppD2A(szNumeric, d); break;
@@ -658,7 +659,7 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 			
 								// Initialze unkonwn variables having a questionmark in front; also works with arrays
 					case 'Q':	chTerm = hppGetExpression(apParseContext, szExpresssion, NULL, HPP_EXP_MAX_LEN);
-								if(islower(szExpresssion[0])) szExpresssion = szExpresssionWithPrefix;  // local variable or function 
+								if(islower((int)szExpresssion[0])) szExpresssion = szExpresssionWithPrefix;  // local variable or function 
 
 								pchParam = hppVarGet(szExpresssion, NULL);
 								if(pchParam == NULL) hppVarPutStr(szExpresssion, "", &cbResultLen);
@@ -674,7 +675,7 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 				
 				switch(chTerm)    // Unitary opertors evaluating the expression and storing in var 'aszResultVarKey'
 				{
-					case '(':  	while(isspace(apParseContext->szCode[apParseContext->cbPos])) (apParseContext->cbPos)++;    // Ignore white spaces such it can be checked if ')' immediately follows
+					case '(':  	while(isspace((int)apParseContext->szCode[apParseContext->cbPos])) (apParseContext->cbPos)++;    // Ignore white spaces such it can be checked if ')' immediately follows
 					
 								if(szExpresssion[0] == 0)    // Function call or just brackets?
 								{
@@ -824,7 +825,7 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 									// Verify if there is an else branch if it was a control structure and no error occured		
 									if(eControlStatus != hppControlStatus_None && apParseContext->eReturnReason == hppReturnReason_None)
 									{
-										while(isspace(apParseContext->szCode[apParseContext->cbPos])) (apParseContext->cbPos)++;    // Ignore white spaces such we can check if "else" is the next code element
+										while(isspace((int)apParseContext->szCode[apParseContext->cbPos])) (apParseContext->cbPos)++;    // Ignore white spaces such we can check if "else" is the next code element
 							
 										if(strncmp(apParseContext->szCode + apParseContext->cbPos, "else", 4) == 0 && apParseContext->eReturnReason == hppReturnReason_None)
 										{
@@ -853,7 +854,7 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 								
 					case 'i':   // Leading '++' or '--' operator
 					case 'd':	chNewTerm = hppGetExpression(apParseContext, szExpresssion, NULL, HPP_EXP_MAX_LEN);
-								if(islower(szExpresssion[0])) szExpresssion = szExpresssionWithPrefix;  // local variable or function
+								if(islower((int)szExpresssion[0])) szExpresssion = szExpresssionWithPrefix;  // local variable or function
 								 
 					case 'I':   // Trailing '++' or '--' operator
 					case 'D':  	pchResult = hppVarGet(szExpresssion, &cbResultLen);
@@ -882,7 +883,7 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 								break;
 								
 					case 'R':	chTerm = hppGetExpression(apParseContext, szExpresssion, NULL, HPP_EXP_MAX_LEN);
-								if(islower(szExpresssion[0])) szExpresssion = szExpresssionWithPrefix;  // local variable or function
+								if(islower((int)szExpresssion[0])) szExpresssion = szExpresssionWithPrefix;  // local variable or function
 							
 								pchResult = hppVarPutStr(aszResultVarKey, szExpresssion, &cbResultLen);
 								break;
@@ -1037,13 +1038,15 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 
 void hppTestFloatPrint()
 {
-	char szNumeric[HPP_NUMERIC_MAX_MEM];
+	//char szNumeric[HPP_NUMERIC_MAX_MEM];
 	
 	if(hppIsFloatTested) return; 
 	hppIsFloatTested = true;
-	sprintf(szNumeric, "%.*g", HPP_NUMERIC_MAX_DIGITS, 1.123);
-	if(strcmp(szNumeric, "1.123") == 0) hppFloatPrintOn = true;
-	else hppFloatPrintOn = false;
+
+	//sprintf(szNumeric, "%.*g", HPP_NUMERIC_MAX_DIGITS, 1.123);
+	//if(strcmp(szNumeric, "1.123") == 0) hppFloatPrintOn = true;
+	//else hppFloatPrintOn = false;
+        hppFloatPrintOn = false;
 }
 
 

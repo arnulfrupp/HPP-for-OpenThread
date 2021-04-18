@@ -1,0 +1,15 @@
+#
+# Halloween
+#
+
+menu "Zephyr Kernel"
+source "Kconfig.zephyr"
+endmenu
+
+module = HALLOWEEN_ZEPHYR
+module-str = zephyr utilities and H++ commands
+source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"
+
+# module = BLE_UTILS
+# module-str = Bluetooth connection utilities
+# source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"

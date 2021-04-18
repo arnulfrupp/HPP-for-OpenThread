@@ -17,7 +17,7 @@
 /* Dependencies: hppVarStorage.h										        */
 /* Dependencies: int is expected to be int32_t. Verify hppAtoX and hppXXtoA.    */
 /* ----------------------------------------------------------------------------	*/
-/* Copyright (c) 2018 - 2019, Arnulf Rupp							            */
+/* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
 /* All rights reserved.												            */
 /* 	                                                                            */
@@ -49,6 +49,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 
 #define HPP_ERROR_CODE_MIN 200              // Programatic Errors, not including timeout

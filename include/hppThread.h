@@ -10,16 +10,14 @@
 /* OpenThread Support Library										            */
 /*																	            */
 /*   - Initialization and resource managment						            */
-/*   - Thread Main loop  			       							           	*/
 /*   - CoAP support functions										            */
-/*   - hppVarStorage bindings (PUT, GET var/x) if compiled with __INCL_HPP_VAR_ */
-/*   - hppParser bindings (POST var/x) if compiled with __INCL_HPP_PARSER_      */
+/*   - hppVarStorage bindings (PUT, GET var/x)                                  */
+/*   - hppParser bindings (POST var/x)                                          */
 /* ----------------------------------------------------------------------------	*/
-/* Platform: OpenThread on Nordic nRF52840							            */
-/* Dependencies: OpenThread, Nordic SDK; If activated: hppVarStorage, hppParser */
-/* Nordic SDK Version: nRF5_SDK_for_Thread_and_Zigbee_v3.0.0_d310e71	        */
+/* Platform: OpenThread integrated in Zephire RTOS  				            */
+/* Nordic SDK Version: Connect SDK v1.4.1	       								*/
 /* ----------------------------------------------------------------------------	*/
-/* Copyright (c) 2018 - 2019, Arnulf Rupp							            */
+/* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
 /* All rights reserved.												            */
 /* 	                                                                            */
@@ -49,6 +47,16 @@
 #ifndef __INCL_HPP_THREAD_
 #define __INCL_HPP_THREAD_
 
+
+// ATTENTION - Thread safety:
+// Functions in this library are usually called from an openthread callback, thus from openthread context
+// Calling functions from outside requires locking the openthread mutex with:
+//
+// openthread_api_mutex_lock(hppOpenThreadContext);
+// function call(s)
+// openthread_api_mutex_unlock(hppOpenThreadContext);
+
+
 #include <stdbool.h>
 #include <ctype.h>
 
@@ -62,19 +70,37 @@
 // Settings
 #define HPP_COAPS_PSK_MAX_LEN 32
 #define HPP_COAPS_ID_MAX_LEN 32
+
+#define HPP_HIDE_VAR_RESOURCE_PASSWORD "openvar"
+
+
+// -----------------------
+// Global Variables
+// -----------------------
+
+extern struct openthread_context *hppOpenThreadContext;
+extern otInstance *hppOpenThreadInstance;               // hppOpenThreadContext->instance
+
+// Hiding variables
+extern bool hppHideVarResources;
       
+
 //  CoAP message context for a delayed answer
 struct hppCoapMessageContextStruct
 {
     char szHeaderText[9];    // holds the text 'context:' to indicate a valid context
     otMessageInfo mMessageInfo;
     otCoapType mCoapType;
-    uint16_t mCoapMessageId;
+    otCoapCode mCoapCode;
     uint8_t mCoapMessageTokenLength;
     uint8_t mCoapMessageToken[OT_COAP_MAX_TOKEN_LENGTH];
+    uint8_t mHasResponded;
 };
 
 typedef struct hppCoapMessageContextStruct hppCoapMessageContext;
+
+// Current CoAP context for coap_respond() H++ command 
+extern hppCoapMessageContext hppMyCurrentCoapMessageContext;
 
 
 // -----------------------
@@ -134,10 +160,10 @@ int hppCoapGetPayloadLenght(otMessage *apMessage);
 // CoAP Response and Confirm Messages
 // ----------------------------------
 
-// Return an empty acknowledge message if the original message was a confirmable message 
+// Return an acknowledge message with no payload if the original message was a confirmable message 
 otError hppCoapConfirmWithCode(otMessage* apMessage, const otMessageInfo* apMessageInfo, otCoapCode aCoapCode);
 
-// Return an empty acknowledge message with code 2.00 (OT_COAP_CODE_RESPONSE_MIN) if the original message was a confirmable message 
+// Return an acknowledge message with no playload with code 2.00 (OT_COAP_CODE_RESPONSE_MIN) if the original message was a confirmable message 
 otError hppCoapConfirm(otMessage* apMessage, const otMessageInfo* apMessageInfo);
 
 // Resond to a CoAP Message with MessageInfo from original message. Both confirmable and non comfirmable is supported. 
@@ -154,12 +180,16 @@ otError hppCoapRespondString(otMessage* apMessage, const otMessageInfo* apMessag
 // Adds a CoAP format option of 'aContentFormat' is different from the defaut format 'OT_COAP_OPTION_CONTENT_FORMAT_TEXT_PLAIN' 
 otError hppCoapRespondFormattedString(otMessage* apMessage, const otMessageInfo* apMessageInfo, const char* aszPayloadString, otCoapOptionContentFormat aContentFormat);
 
+// Resond with CoAP code empty to a CoAP Message with given MessageInfo from original message if it was confirmable. 
+// The empty response has no payload and and indicates to the client that a later response with the same token may come.
+otError hppCoapRespondEmpty(otMessage* apMessage, const otMessageInfo* apMessageInfo);
+
 // Store CoAP message context for a delayed answer
 void hppCoapStoreMessageContext(hppCoapMessageContext* apCoapMessageContext, otMessage* apMessage, const otMessageInfo* apMessageInfo);
 
-// Resond to a CoAP Message with given hppCoapMessageContext original message. Both confirmable and non comfirmable is supported. 
-// The the response payload is piggybacked with the acknoledgment in case of confirmable requests.
-// Adds a CoAP format option of 'aContentFormat' is different from the defaut format 'OT_COAP_OPTION_CONTENT_FORMAT_TEXT_PLAIN' 
+// Respond to a CoAP Message with given hppCoapMessageContext form original message. Both confirmable and non comfirmable is supported. 
+// Adds a CoAP format option of 'aContentFormat' is different from the defaut format 'OT_COAP_OPTION_CONTENT_FORMAT_TEXT_PLAIN'
+// If apPayload is NULL, a response without palyoad and  CoAP code OT_COAP_CODE_NOT_FOUND is sent.   
 otError hppCoapRespondTo(const hppCoapMessageContext* apCoapMessageContext, const char* apPayload, size_t cbPayloadLen, otCoapOptionContentFormat aContentFormat);
 
 
@@ -181,6 +211,9 @@ bool hppIsAcceptedCoapContentFormat(otMessage* apMessage, otCoapOptionContentFor
 
 // Get CoAP Path option. Returns a heap allocated pointer which needs to be freed in the calling program. 
 char* hppGetCoapPath(otMessage* apMessage);
+
+// Invalidate current coap meassge context after H++ script execution triggered by a CoAP message              
+void hppInvalidateHppCallContext();
 
 // -------------------
 // Secure CoAP (CoAPs)
@@ -226,6 +259,11 @@ void hppDeleteCoapsContext();
 // The parameter 'abSecure' determines if a CoAPs resource (true) or regular CoAP (false) resource is added
 bool hppCoapAddResource(const char* apResourceName, const char* szResourceInformation, otCoapRequestHandler apHandler, void* apContext, bool abSecure);
 
+// Return string with all CoAP resources in CoAP .wellknown/core format or NULL in case of an error.
+// The calling function must free the memory allocated by this function unless NULL was returned. 
+char* hppNew_WellknownCore();
+
+
 // -------------------
 // Manage IP Addresses
 // -------------------
@@ -237,6 +275,7 @@ bool hppAddAddress(const char* aAddress);
 // aszText_out mut be 40 bytes long to hold the address string including terminating null byte.
 // Returns aszText_out.
 // Does NOT check if aszText_out is NULL!
+// This does not require locking the thread mutex
 char* hppGetAddrString(const otIp6Address *apIp6Address, char* aszText_out);
 
 
@@ -252,13 +291,13 @@ void hppCliOutputStr(const char* aszText, bool abNewLine);
 // Thread Initialization on nRF 52840
 // ----------------------------------
 
-static void hppThreadInit();
+void hppThreadInit();
 
 
 // ---------------------------------
 // Main Loop for Thread on nRF 52840
 // ---------------------------------
 
-static void hppMainLoop();
+void hppMainLoop();
 
 #endif

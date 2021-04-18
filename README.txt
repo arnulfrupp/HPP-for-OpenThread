@@ -563,10 +563,10 @@ Thread bindings are functions added to the core H++ scripting language.
 			contains the numbner of parameters passed to the custom command and the variables 'paramX' contain the 
 			parameters.    
 
-- ip_addr_add(a):	Adds IPv6 address a to the host. Format of a: xxxx:xxxx::xxxx. Both unicast and multicast is supported. 	
-- ip_addr_eid():	Returns the EID address of the host.
-- ip_addr_gua(n):	Returns the n'th global unique address (GUA) of the host. Returns 'false' if no n'th GUA address exists.
-- ip_addr_ula(n):	Returns the n'th unique local address (ULA) of the host. Returns 'false' if no n'th ULA address exists.
+- ip_add_addr(a):	Adds IPv6 address a to the host. Format of a: xxxx:xxxx::xxxx. Both unicast and multicast is supported. 	
+- ip_get_eid():		Returns the EID address of the host.
+- ip_get_gua(n):	Returns the n'th global unique address (GUA) of the host. Returns 'false' if no n'th GUA address exists.
+- ip_get_ula(n):	Returns the n'th unique local address (ULA) of the host. Returns 'false' if no n'th ULA address exists.
 
 - coap_add_resource(uri_p, info, hnd): Adds a CoAP resource with the URI path uri_p to the host. For service discovery, with 
 			/.well-known/core, additional information (e.g. rt=xyz for resource type) can be added. See respective 
