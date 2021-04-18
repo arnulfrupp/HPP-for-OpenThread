@@ -18,7 +18,7 @@
 /* Dependencies: OpenThread, Nordic SDK											*/
 /* Nordic SDK Version: nRF5_SDK_for_Thread_and_Zigbee_2.0.0_29775ac		        */
 /* ----------------------------------------------------------------------------	*/
-/* Copyright (c) 2018 - 2019, Arnulf Rupp							            */
+/* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
 /* All rights reserved.												            */
 /* 	                                                                            */
@@ -132,8 +132,9 @@ void LoadDemoScripts()
 									"}\n\n"
 									"switch_led();\n", 
 									NULL);
+									
 
-	// Address registration must be done after the nework is up (prefix received from the boader router)
+	// Address registration must be done after the network is up (prefix received from the boader router)
 	hppVarPutStr("registration_handler", "ip_add_addr('fd11:22::100');\n", NULL);	 	// STABLE IP ADDRESS -> CHANGE IID (1xx) TO GIVE ALL DEVICES A UNIQUE IPv6 ADDRESS							 
 								 
 	// Initialization script
