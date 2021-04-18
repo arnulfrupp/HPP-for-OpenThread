@@ -1,4 +1,4 @@
 build_nrf52840dk/
 build_nrf52840dongle/
-scripts/output/*
+scripts/output/build.zip
 
