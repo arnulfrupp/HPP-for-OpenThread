@@ -1,9 +1,10 @@
-H A L L O W E E N + +   -  Readme -  v0.10
+H A L L O W E E N + +   -  Readme -  v0.11
 ------------------------------------------
 
-Halloween++ is an open source scripting language for microcontrollers and embedded systems especially suitable 
-for remote controlled systems featuring a restful web interface for IP networks.
-It originally was invented for remote controlled Halloween ghosts and candles :-)
+Halloween++ is an open source scripting language for microcontrollers and embedded systems especially suitable
+for remote controlled systems featuring a restful web interface for IP networks.  It originally was invented
+for remote controlled Halloween ghosts and candles :-)
+The short name H++ is often used for Halloween++ in this document.
 
 The project includes bindings for OpenThread running on a Nordic Semiconductor nRF52840 chip. 
 OpenThread (openthread.io) is an open source implementation of the IPv6 based wireless mesh network protocol
@@ -121,8 +122,9 @@ Create a new folder "HppCodeParser" inside the "Halloween" folder.
 The "HppCodeParser" folder is also called <project folder> in the following text.
 
 Copy the content of the "<SDK folder>\examples\thread\cli" folder of the SDK in the new <project folder>.  
-The folder names are not essential. Only the number of sub-folders is important to match with the relative
-paths in the SDK makefile.
+The folder names in the <project folder> path are not essential. Only the number of sub-folders is important
+to match with the relative paths in the SDK makefile.
+
 Now you should be able to compile the Nordic CLI demo using the makefile for the USB bootloader version 
 (start "make" in the folder <project folder>\ftd\usb\pca10059\mbr\armgcc) or start "DoMake.cmd"
 in the <project folder> to do the same in a Windows environment.
@@ -241,14 +243,14 @@ Add option "-p" for netsh to make this setting permanent after reboot.
 Thread devices usually use SLAAC to configure unique IPv6 addresses. This essentially means they select a
 random interface ID (last 8 bytes) for the prefixes advertised by the border router and verify there is no
 address duplication in the same subnet. If you are connected via USB to the CLI of the device, you can
-find out the IP addresses with the ipaddr CLI command. It a real IoT application, this may not be
+find out the IP addresses with the ipaddr CLI command. In a real IoT application, this may not be
 practicable. There are several methods known for device discovery. A popular method is muticast discovery.
 Alternatively, devices may register themselves to a resource directory.
 
 For the purpose of this introduction we choose the quick and dirty method and just add a fixed IPv6 address 
 with the on-mesh prefix. You can find the H++ script command ip_addr_add("FD11:22::xxx") doing that in the
 startup script created by the function LoadDemoScripts() inside the "main.c" file.
-Makes sure you change that address for every device you flash with the H++ firmware. The fixed IPv6 addresses
+Make sure you change that address for every device you flash with the H++ firmware. The fixed IPv6 addresses
 are used to individually address the nodes of the mesh network e.g. with a CoAP browser or any CoAP client.
 
 Link 8 introduces CoAP technology and available tools for CoAP. Basic understanding of CoAP is essential for
@@ -269,7 +271,7 @@ strings as well as floating point numbers. This makes it very easy to interact w
 or HTTP/restful way. All variable and the program code itself will be presented as CoAP resources once the
 Thread binding is included in the project (unless deactivated by a corresponding H++ command). 
              
-A CoAP browser application implementing .well-known/core type resource discovery should be able to discover
+A CoAP browser application implementing .well-known/core type resource discovery should be able to discover,
 show and modify all H++ language resources under the resource path:
 coap://[device_IPv6_addr]/var/<var name>
 
@@ -314,13 +316,14 @@ Code Execution:
 
 The '(' operator after a variable name executes H++ code inside a variable. Up to 9 parameters can be passed
 to a function and later be accessed as local variables 'param1' to 'param9'. For readability reasons it is
-recommendable to assign the paramter values to variables with more speaking names at the beginning of the
+recommendable to assign the parameter values to variables with more speaking names at the beginning of the
 function. The leading '?' operator may be used for optional parameters. Often H++ functions are very simple
 and still readable if a limited number of 'paramX' parameter variables are used directly.  
 
 In a Thread based project code can also be injected with a CoAP PUT operation:
 PUT coap://[device_IPv6_addr]/var/<function_name> - Example payload: writeln('hello world');
 A POST operation on the same path executes the code. GET and DELETE operations also work as expected.
+Only coap paths starting with /var have that pre-defined behavior. 
 
 my_code();    // executes the H++ code in the injected variable 'my_code' or reports Error #214 if it does not exist
 my_code = "writeln('hello local world');";
@@ -358,7 +361,7 @@ Key differences compared to C / C++:
    Values are automatically initialized with zero. E.g.  mystruct = struct('int16:i,int32:l'); zero = mystruct.l;
 5) [index]. operator: Accesses an array of structures. Writing behind an existing structure enlarges the structure
    automatically and initializes values with zero. E.g. mystruct[5].i = 1;
-6) :: operator: Denotes that a method name or sub item following. E.g. v = 'hallo'; return v::len();  // methode call
+6) :: operator: Denotes that a method name or sub item is following. E.g. v = 'hallo'; return v::len();  // methode call
    if no '(' operator is following, :: justs adds '.' as part of the variable name. E.g.  a::1 = 5;  // accesses /var/a.1   
    The character '.' was chosen because ':' is not a valid character inside a URI string; a::1 corresponds to a.1 in URI notion 
 7) == and != operators: Bytewise comparea two strings. Comparing values requires that numbers are coded in the
@@ -392,15 +395,15 @@ Code(&s);        // results in s = "new"
 The expression name::<i> can be used to imitate arrays in cases where binary arrays 'name[i]'  or name[i].member are
 not sufficient. However, large arrays of that kind should be avoided. Every element name.<i> is stored as an individual
 variable. A high number of variables makes H++ execution slow because every access operation to a variable is a search
-operation. Also the name of every variable must be stored, making this a very memory unefficient method.
+operation. Also, the name of every variable must be stored, making this a very memory inefficient method.
 
  
 Control Structures:
 
-H++ support two types of control structures if and while. Like in C language if(..) can be followed by one single expression
-followed by ';' of by a set of expressions inside curly brackets. The if(..) control structure may have and else part.
-The while loop has similar syntax like in C langauge, but also allows for an else the option. The else branch will only be
-executed if the while part was never executed. The key words break, continue and return work similar to C language.
+H++ support two types of control structures: if and while. Like in C language if(..) can be followed by one single expression
+followed by ';' or by a set of expressions inside curly brackets. The if(..) control structure may have and else part.
+The while loop has similar syntax like in C language, but also allows for an else the option. The else branch will only be
+executed if the while part was never executed. The key words break, continue and return work like C language.
  
 i = param1; 
 a = param2;      			
@@ -423,7 +426,7 @@ Comments:
 
 All text behind '//' up to the end of the line is ignored by the H++ interpreter, such that comments can be put behind.
 Be aware that comments are stored together with the program code and therefore cost memory resources in the microcontroller.
-Also code with comments runs slighity slower.   
+Also, code with comments runs slighity slower.   
 The usual C style comments with /* ... */ are not allowed in H++. This commenting style is reserved for future editors or upload
 tools automatically removing such comments while uploading or exporting.
 
@@ -573,10 +576,10 @@ Thread bindings are functions added to the core H++ scripting language.
 			content format (numerical) of the response.
 - coaps_add_resource(uri_p, info, hnd):	Same as above but for secure connection. Security credentials must have been set before 
 			using coaps_set_psk(..) or coaps_set_cert(..). 	
-			
+
 - coaps_hide_vars(b):	Determines if H++ variables are visible as coap resources (/var/x) with b = true or false.
 			The global variable Var_Hide_PW sets the password for unlocking the H++ variable access using the
-			none discoverable resource '/var_hide'. The default password is 'openvar'. (if Var_Hide_PW does not exist)
+			none discoverable resource '/var_hide'. The default password is 'openvar'. (if Var_Hide_PW does not exist)				 
 
 PUT:
 - coap_put(a, uri_p, p [, c, hnd]): Sends a CoAP PUT request to the host with the IPv6 address a using the URI path option uri_p and
@@ -604,6 +607,7 @@ POST:
 			from coaps_connect(..).
 
  
+
 	
 >> The following functions shall only be used inside a CoAP request handler set with coap_add_resource(..):
 

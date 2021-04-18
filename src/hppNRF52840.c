@@ -118,7 +118,7 @@ static uint32_t hppButtoPressTime = 0;
 // Duty cycle values range from 0 to uiCountStop (100%). 
 // Every PWM setting is repeated 'uiStepRepeat' times until the next values are taken. If 'uiStepRepeat' is null then
 // the PMW values are static. The Sequence is repeated uiLoop times (uiLoop = 0 --> no Loop)
-// If uiLoop is >0 cSequenceLen must be minimum 8 (two value groups).
+// If uiLoop is >0 cSequenceLen must be minimum 2.
 
 void hppStartPWM(unsigned int uiCountStop, int iPin1, int iPin2, int iPin3, int iPin4, uint16_t* puiSeqence, size_t cSequenceLen, unsigned int uiStepRepeat, unsigned int uiLoop)
 {
