@@ -170,7 +170,7 @@ otError hppCoapSend(const char* aszUriPathAddress, const char* aszUriPathOptions
     if (error == OT_ERROR_NONE)
 	{
 		memset(&myMessageInfo, 0, sizeof(myMessageInfo));     // myMessageInfo not relevant in case of secure connection
-		myMessageInfo.mInterfaceId = OT_NETIF_INTERFACE_ID_THREAD;
+		//myMessageInfo.mInterfaceId = OT_NETIF_INTERFACE_ID_THREAD;      REMOVED IN OPENTHREAD
 		myMessageInfo.mPeerPort = OT_DEFAULT_COAP_PORT;    
         if(aszUriPathAddress != NULL)
         {
@@ -279,8 +279,9 @@ otError hppCoapConfirmWithCode(otMessage* apMessage, const otMessageInfo* apMess
     pMyMessage = otCoapNewMessage(thread_ot_instance_get(), NULL);
     if (pMyMessage == NULL) return error;
 
-    otCoapMessageInit(pMyMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, aCoapCode);
-    otCoapMessageSetMessageId(pMyMessage, otCoapMessageGetMessageId(apMessage));
+    //otCoapMessageInit(pMyMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, aCoapCode);
+    //otCoapMessageSetMessageId(pMyMessage, otCoapMessageGetMessageId(apMessage));
+    otCoapMessageInitResponse(pMyMessage, apMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, aCoapCode);
     
 	if(otCoapMessageGetToken(apMessage) != NULL) 
 		otCoapMessageSetToken(pMyMessage, otCoapMessageGetToken(apMessage), otCoapMessageGetTokenLength(apMessage));
@@ -316,8 +317,9 @@ otError hppCoapRespond(otMessage* apMessage, const otMessageInfo* apMessageInfo,
 
 	if(otCoapMessageGetType(apMessage) == OT_COAP_TYPE_CONFIRMABLE) 
 	{
-		otCoapMessageInit(pMyMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, OT_COAP_CODE_CONTENT);
-		otCoapMessageSetMessageId(pMyMessage, otCoapMessageGetMessageId(apMessage));
+		//otCoapMessageInit(pMyMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, OT_COAP_CODE_CONTENT);
+		//otCoapMessageSetMessageId(pMyMessage, otCoapMessageGetMessageId(apMessage));
+        otCoapMessageInitResponse(pMyMessage, apMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, OT_COAP_CODE_CONTENT);
 	}
 	else otCoapMessageInit(pMyMessage, OT_COAP_TYPE_NON_CONFIRMABLE, OT_COAP_CODE_CONTENT);
 	
@@ -383,7 +385,7 @@ void hppCoapStoreMessageContext(hppCoapMessageContext* apCoapMessageContext, otM
 }
 
 // Resond to a CoAP Message with given hppCoapMessageContext original message. Both confirmable and non comfirmable is supported. 
-// The the response payload is piggybacked with the acknoledgment in case of confirmable requests.
+// The the response payload is piggybacked with the acknowledgment in case of confirmable requests.
 // Adds a CoAP format option of 'aContentFormat' is different from the defaut format 'OT_COAP_OPTION_CONTENT_FORMAT_TEXT_PLAIN' 
 otError hppCoapRespondTo(const hppCoapMessageContext* apCoapMessageContext, const char* apPayload, size_t cbPayloadLen, otCoapOptionContentFormat aContentFormat)
 {
@@ -399,7 +401,8 @@ otError hppCoapRespondTo(const hppCoapMessageContext* apCoapMessageContext, cons
 	if(apCoapMessageContext->mCoapType == OT_COAP_TYPE_CONFIRMABLE) 
 	{
 		otCoapMessageInit(pMyMessage, OT_COAP_TYPE_ACKNOWLEDGMENT, OT_COAP_CODE_CONTENT);
-		otCoapMessageSetMessageId(pMyMessage, apCoapMessageContext->mCoapMessageId);
+		//otCoapMessageSetMessageId(pMyMessage, apCoapMessageContext->mCoapMessageId);         TODO:  Check if it works without message ID
+        
 	}
 	else otCoapMessageInit(pMyMessage, OT_COAP_TYPE_NON_CONFIRMABLE, OT_COAP_CODE_CONTENT);
 	
@@ -433,20 +436,19 @@ otError hppCoapRespondTo(const hppCoapMessageContext* apCoapMessageContext, cons
 const uint16_t hppGetCoapOption(otMessage* apMessage, otCoapOptionType aCoapOption, uint8_t* apOptionBuffer, uint16_t cbMaxLen)
 {
 	const otCoapOption* pCoapOption;
-	
-	pCoapOption = otCoapMessageGetFirstOption(apMessage);
-	while(pCoapOption != NULL)
-	{
-		if(pCoapOption->mNumber == aCoapOption) 
-		{
-			if(pCoapOption->mLength > cbMaxLen) return 0;
+    otCoapOptionIterator theCoapOptionIterator;
+    otError error;
 
-            otCoapMessageGetOptionValue(apMessage, apOptionBuffer);
-            return pCoapOption->mLength;
-		}
+    error = otCoapOptionIteratorInit(&theCoapOptionIterator, apMessage);
+    if(error != OT_ERROR_NONE) return 0;
 
-		pCoapOption = otCoapMessageGetNextOption(apMessage);
-	}
+    pCoapOption = otCoapOptionIteratorGetFirstOptionMatching(&theCoapOptionIterator, aCoapOption);
+    if(pCoapOption != NULL) 
+    {
+        if(pCoapOption->mLength > cbMaxLen) return 0;
+        otCoapOptionIteratorGetOptionValue(&theCoapOptionIterator, apOptionBuffer);
+        return pCoapOption->mLength;
+    }
 
 	return 0;
 }
@@ -472,28 +474,30 @@ otCoapOptionContentFormat hppGetCoapContentFormat(otMessage* apMessage)
 bool hppIsAcceptedCoapContentFormat(otMessage* apMessage, otCoapOptionContentFormat aContentFormat)
 {
 	const otCoapOption* pCoapOption;
+    otCoapOptionIterator theCoapOptionIterator;
+    otError error;
+
+    error = otCoapOptionIteratorInit(&theCoapOptionIterator, apMessage);
+    if(error != OT_ERROR_NONE) return false;
 	
-	pCoapOption = otCoapMessageGetFirstOption(apMessage);
+	pCoapOption = otCoapOptionIteratorGetFirstOptionMatching(&theCoapOptionIterator, OT_COAP_OPTION_ACCEPT);
 	while(pCoapOption != NULL)
 	{
-		if(pCoapOption->mNumber == OT_COAP_OPTION_ACCEPT) 
-		{
-			if(pCoapOption->mLength == 1) 
-            {
-                uint8_t uiFormat;
-                otCoapMessageGetOptionValue(apMessage, &uiFormat);
-                if(uiFormat == aContentFormat) return true;
-            }
-			
-			if(pCoapOption->mLength == 2) 
-            {
-                uint16_t uiFormat;
-                otCoapMessageGetOptionValue(apMessage, &uiFormat);
-                if(uiFormat == aContentFormat) return true;
-            }
-		}
+        if(pCoapOption->mLength == 1) 
+        {
+            uint8_t uiFormat;
+            otCoapOptionIteratorGetOptionValue(&theCoapOptionIterator, &uiFormat);
+            if(uiFormat == aContentFormat) return true;
+        }
         
-		pCoapOption = otCoapMessageGetNextOption(apMessage);
+        if(pCoapOption->mLength == 2) 
+        {
+            uint16_t uiFormat;
+            otCoapOptionIteratorGetOptionValue(&theCoapOptionIterator, &uiFormat);
+            if(uiFormat == aContentFormat) return true;
+        }
+        
+		pCoapOption = otCoapOptionIteratorGetNextOptionMatching(&theCoapOptionIterator, OT_COAP_OPTION_ACCEPT);
 	}
 
 	return false;
@@ -504,39 +508,39 @@ bool hppIsAcceptedCoapContentFormat(otMessage* apMessage, otCoapOptionContentFor
 char* hppGetCoapPath(otMessage* apMessage)
 {
     const otCoapOption* pCoapOption;
+    otCoapOptionIterator theCoapOptionIterator;
+    otError error;
 	char* szPath = NULL;
     size_t cbPathLen = 0;
     size_t cbWritePos = 0;
+
+    error = otCoapOptionIteratorInit(&theCoapOptionIterator, apMessage);
+    if(error != OT_ERROR_NONE) return false;
 	
     // Calculate path length 
-    pCoapOption = otCoapMessageGetFirstOption(apMessage);
+    pCoapOption = otCoapOptionIteratorGetFirstOptionMatching(&theCoapOptionIterator, OT_COAP_OPTION_URI_PATH);
     
     while(pCoapOption != NULL)
 	{
-		if(pCoapOption->mNumber == OT_COAP_OPTION_URI_PATH)
-		{
-            if(cbPathLen > 0) cbPathLen++;
-            cbPathLen += pCoapOption->mLength;  
-		}
-
-		pCoapOption = otCoapMessageGetNextOption(apMessage);
+	
+        if(cbPathLen > 0) cbPathLen++;
+        cbPathLen += pCoapOption->mLength; 
+        
+        pCoapOption = otCoapOptionIteratorGetNextOptionMatching(&theCoapOptionIterator, OT_COAP_OPTION_URI_PATH);
 	}
 
-	pCoapOption = otCoapMessageGetFirstOption(apMessage);
+    pCoapOption = otCoapOptionIteratorGetFirstOptionMatching(&theCoapOptionIterator, OT_COAP_OPTION_URI_PATH);
     szPath = malloc(cbPathLen + 1);
     if(szPath == NULL) return NULL;  // Out of Memory
     
 	while(pCoapOption != NULL)
 	{
-		if(pCoapOption->mNumber == OT_COAP_OPTION_URI_PATH)
-		{
-            if(cbWritePos != 0) szPath[cbWritePos++] = '/';
-            
-            otCoapMessageGetOptionValue(apMessage, szPath + cbWritePos);
-            cbWritePos += pCoapOption->mLength;
-		}
+        if(cbWritePos != 0) szPath[cbWritePos++] = '/';
+        
+        otCoapOptionIteratorGetOptionValue(&theCoapOptionIterator, szPath + cbWritePos);
+        cbWritePos += pCoapOption->mLength;
 
-		pCoapOption = otCoapMessageGetNextOption(apMessage);
+        pCoapOption = otCoapOptionIteratorGetNextOptionMatching(&theCoapOptionIterator, OT_COAP_OPTION_URI_PATH);
 	}
 
     szPath[cbWritePos] = 0;   // terminate the string with null byte
@@ -578,8 +582,8 @@ otError hppCreateCoapsContextWithPSK(const char* szIdentityName, const char* szP
     strcpy(hppCoapsID, szIdentityName);
     strcpy(hppCoapsPSK, szPassword);
 
-    error = otCoapSecureSetPsk(thread_ot_instance_get(), (uint8_t*)hppCoapsPSK, strlen(hppCoapsPSK), (uint8_t*)hppCoapsID, strlen(hppCoapsID));
-    if(error != OT_ERROR_NONE) return error;
+    otCoapSecureSetPsk(thread_ot_instance_get(), (uint8_t*)hppCoapsPSK, strlen(hppCoapsPSK), (uint8_t*)hppCoapsID, strlen(hppCoapsID));
+    //if(error != OT_ERROR_NONE) return error;
 
     otCoapSecureSetSslAuthMode(thread_ot_instance_get(), false);   // verifyPeerCert = false
     otCoapSecureSetClientConnectedCallback(thread_ot_instance_get(), aConnectHandler, aContext);
@@ -628,13 +632,14 @@ otError hppCreateCoapsContextWithCert(const char* szX509Cert, const char* szPriv
         }
     }
 
-    error = otCoapSecureSetCertificate(thread_ot_instance_get(), (const uint8_t *)hppCoapsCert, strlen(hppCoapsCert),
-                      		           (const uint8_t *)hppCoapsCertKey, strlen(hppCoapsCertKey));
-    if(error != OT_ERROR_NONE) return error;
+    otCoapSecureSetCertificate(thread_ot_instance_get(), (const uint8_t *)hppCoapsCert, strlen(hppCoapsCert),
+               		           (const uint8_t *)hppCoapsCertKey, strlen(hppCoapsCertKey));
+    //if(error != OT_ERROR_NONE) return error;
+
     if(hppCoapsCaCert != NULL)
     { 
-        error = otCoapSecureSetCaCertificateChain(thread_ot_instance_get(), (const uint8_t *)hppCoapsCaCert, strlen(hppCoapsCaCert));
-        if(error != OT_ERROR_NONE) return error;
+        otCoapSecureSetCaCertificateChain(thread_ot_instance_get(), (const uint8_t *)hppCoapsCaCert, strlen(hppCoapsCaCert));
+        //if(error != OT_ERROR_NONE) return error;
         otCoapSecureSetSslAuthMode(thread_ot_instance_get(), true);   // verifyPeerCert = true
     }
     else otCoapSecureSetSslAuthMode(thread_ot_instance_get(), false);   // verifyPeerCert = false
@@ -665,7 +670,7 @@ otError hppCoapsConnect(const char* aszUriPathAddress, otHandleCoapSecureClientC
     if(error != OT_ERROR_NONE) return error;
 
     theSockAddr.mPort = OT_DEFAULT_COAP_SECURE_PORT;
-    theSockAddr.mScopeId = OT_NETIF_INTERFACE_ID_THREAD;
+    //theSockAddr.mScopeId = OT_NETIF_INTERFACE_ID_THREAD;       
 
     error = otCoapSecureConnect(thread_ot_instance_get(), &theSockAddr, aConnectHandler, aContext);
 
@@ -894,7 +899,6 @@ void hppThreadStateChangedCallback(uint32_t flags, void * pContext)
                 break;
         }
     }
- 
 }
 
 
@@ -1243,21 +1247,21 @@ static void hppCliCommandHandler(int argc, char *argv[], const char* aszCmd)
 
 // CLI handers do not have context parameter. Therefore we need individual callback fundtions for all user definde clie commands
 //
-static void hppCliCommandHandler01(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[1].mName); }
-static void hppCliCommandHandler02(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[2].mName); }
-static void hppCliCommandHandler03(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[3].mName); }
-static void hppCliCommandHandler04(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[4].mName); }
-static void hppCliCommandHandler05(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[5].mName); }
-static void hppCliCommandHandler06(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[6].mName); }
-static void hppCliCommandHandler07(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[7].mName); }
-static void hppCliCommandHandler08(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[8].mName); }
-static void hppCliCommandHandler09(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[9].mName); }
-static void hppCliCommandHandler10(int argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[10].mName); }
+static void hppCliCommandHandler01(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[1].mName); }
+static void hppCliCommandHandler02(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[2].mName); }
+static void hppCliCommandHandler03(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[3].mName); }
+static void hppCliCommandHandler04(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[4].mName); }
+static void hppCliCommandHandler05(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[5].mName); }
+static void hppCliCommandHandler06(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[6].mName); }
+static void hppCliCommandHandler07(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[7].mName); }
+static void hppCliCommandHandler08(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[8].mName); }
+static void hppCliCommandHandler09(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[9].mName); }
+static void hppCliCommandHandler10(uint8_t argc, char *argv[]) { hppCliCommandHandler(argc, argv, hppCliCommandTable[10].mName); }
 
-static void (*hppCliCommandHandlerList[HPP_MAX_CLI_COUNT])(int argc, char *argv[]) = {  hppCliCommandHandler01, hppCliCommandHandler02, hppCliCommandHandler03, 
-                                                                                        hppCliCommandHandler04, hppCliCommandHandler05, hppCliCommandHandler06,
-                                                                                        hppCliCommandHandler07, hppCliCommandHandler08, hppCliCommandHandler09,
-                                                                                        hppCliCommandHandler10 };
+static void (*hppCliCommandHandlerList[HPP_MAX_CLI_COUNT])(uint8_t argc, char *argv[]) = {  hppCliCommandHandler01, hppCliCommandHandler02, hppCliCommandHandler03, 
+                                                                                            hppCliCommandHandler04, hppCliCommandHandler05, hppCliCommandHandler06,
+                                                                                            hppCliCommandHandler07, hppCliCommandHandler08, hppCliCommandHandler09,
+                                                                                            hppCliCommandHandler10 };
 
 // Print string to CLI console with LF to CRLF translation. Adds  another CRLF if abNewLine is true. 
 void hppCliOutputStr(const char* aszText, bool abNewLine)
@@ -1274,7 +1278,7 @@ void hppCliOutputStr(const char* aszText, bool abNewLine)
 }
 
 // handler for 'hpp' command executing H++ code passed as parameters 
-static void hppCliHppCommandHandler(int argc, char *argv[])
+static void hppCliHppCommandHandler(uint8_t argc, char *argv[])
 {
     char* pchResult;
     char szCmd[HPP_MAX_CLI_HPP_CMD_LEN + 1];
