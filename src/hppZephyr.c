@@ -15,7 +15,7 @@
 /*   - Peripherals function bindings                                            */       
 /* ----------------------------------------------------------------------------	*/
 /* Platform: Zephire RTOS on Nordic nRF52840						            */
-/* Nordic SDK Version: Connect SDK v1.4.1	       								*/
+/* Nordic SDK Version: Connect SDK v1.5.1	       								*/
 /* ----------------------------------------------------------------------------	*/
 /* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
@@ -71,7 +71,8 @@
 // Settings
 // ----------------
 
-#define HPP_TIMER_RESOURCE_MAX          8
+#define HPP_EVENT_TIMER_RESOURCE_COUNT  64
+
 #define HPP_MIN_TIMER_TIME              20
 
 #define HPP_ASYNC_RING_BUF_BUFFER_SIZE  2048
@@ -109,6 +110,36 @@ K_SEM_DEFINE(hppParserSemaphor, 0, 10000);
 
 
 // ----------------
+// Typedefs
+// ----------------
+
+typedef struct hppTimerResource
+{
+    struct k_timer mTimerResource;                                  ///< Zephyr timer Resource
+
+    hppTimerHandler pHandler;                                       ///< Handler function
+    void* pContext;                                                 ///< Application context
+
+} hppTimerResource;
+
+
+typedef struct hppEventTimerResource
+{
+    struct k_timer mTimerResource;                                  ///< Zephyr timer Resource
+
+    hppQueuedTimerHandler pHandler;                                 ///< Handler function
+    void* pApplicationData;                                         ///< Application data
+    uint32_t mApplicationDataLen;                                   ///< Application data lenght in bytes
+    void* pContext;                                                 ///< Application context
+
+    bool mInUse;                                                    ///< Resource currently in use 
+
+} hppEventTimerResource;
+
+
+
+
+// ----------------
 // Global variables
 // ----------------
 
@@ -120,12 +151,17 @@ char hppAsyncDataBuffer[HPP_ASYNC_MAX_DATA_SIZE + 1];
 char hppAsyncVarName[HPP_ASYNC_MAX_VAR_SIZE + 1];
 
 
-// USB INterface
+// USB Interface
 const struct device *hppUsbDev;
 uint8_t hppZephyrUsbRingBufBuffer[HPP_ZEPHYR_USB_SEND_BUF_SIZE];
 struct ring_buf hppZephyrUsbRingBuf;
 uint8_t hppZephyrUsbRecvBufBuffer[HPP_ZEPHYR_USB_RECV_BUF_SIZE];
 uint16_t hppZephyrUsbRecvBufBufferLen = 0;
+
+
+// Timer resources
+hppTimerResource hppTimerResources[HPP_TIMER_RESOURCE_COUNT];
+hppEventTimerResource hppEventTimerResources[HPP_EVENT_TIMER_RESOURCE_COUNT];
 
 
 // ----------------
@@ -146,7 +182,32 @@ uint16_t hppZephyrUsbRecvBufBufferLen = 0;
 #define HPP_ASYNC_TLV_VAR_GET_WKC_COAP_RESPONSE     12
 #define HPP_ASYNC_TLV_VAR_HIDE                      13
 #define HPP_ASYNC_TLV_USB_RECV                      14
+#define HPP_ASYNC_TLV_TIMER_EXPIRED                 15
+#define HPP_ASYNC_TLV_EVENT_TIMER_EXPIRED           16
 
+
+
+
+void hppTimerExecutionHandler(void *apContext)
+{
+    if(apContext == NULL) return;   // unknown H++ function
+
+    hppAsyncParseVar((const char*)apContext);
+}
+
+
+void hppEventExecutionHandler(void* apData, uint32_t aDataLen, void *apContext)
+{
+    bool bSuccess;
+
+    if(apContext == NULL) return;   // unknown H++ function
+
+    bSuccess = hppAsyncVarPut("0000:event", apData, aDataLen, true);
+    if(bSuccess) hppAsyncParseVar((const char*)apContext);
+
+    // Make sure to unlock the parser mutex after any hppAsyncXXX(...) call with abSyncWithNext=true if hppAsyncParseVarCoapResponse(...) was not executed.
+    if(!bSuccess) hppAsyncParseVar("");
+}
 
 
 // ----------------------------------------
@@ -288,13 +349,13 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
     // timer_XXX commands
     if(strncmp(aszFunctionName, "timer_", 6) == 0)
     {
-        // Parmeters: timer_id, time (in ms), function name  --->  timer_id =  0..HPP_TIMER_RESOURCE_MAX - 1 (7)     
+        // Parameters: timer_id, time (in ms), function name  --->  timer_id =  0..HPP_TIMER_RESOURCE_COUNT - 1 (7)     
         if(strcmp(aszFunctionName, "timer_start") == 0 || strcmp(aszFunctionName, "timer_once") == 0)   
         {
             char* pchParam3;
             unsigned int uiTimer;
             uint32_t uiTime;
-            uint32_t error = -1;
+            bool bSuccess = false;
 
             aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '3';
             pchParam3 = hppVarGet(aszParamName, NULL);
@@ -304,24 +365,46 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
             uiTime = atol(pchParam2);
             if(uiTime < HPP_MIN_TIMER_TIME) uiTime = HPP_MIN_TIMER_TIME;  // minimum time for HPP interpreter  
 
-            if(uiTimer <  HPP_TIMER_RESOURCE_MAX && *pchParam3 != 0) 
+            if(*pchParam3 != 0) 
             {
-                error = -1;
+                bSuccess = hppTimerStart(uiTimer, uiTime, aszFunctionName[6] == 's', hppTimerExecutionHandler, (void*)hppVarGetKey(pchParam3, true));
             }
 
-            return hppVarPutStr(aszResultVarKey, error == 0 ? "true" : "false", apcbResultLen_Out);
+            return hppVarPutStr(aszResultVarKey, bSuccess ? "true" : "false", apcbResultLen_Out);
         }
 
-        // Parmeter: timer_id     
+        // Parameter: timer_id     
         if(strcmp(aszFunctionName, "timer_stop") == 0)   
         {
             unsigned int uiTimer;
-            uint32_t error = -1;
+            bool bSuccess = false;
 
             uiTimer = atoi(pchParam1);   
-            if(uiTimer <  HPP_TIMER_RESOURCE_MAX) error = -1;
+            bSuccess = hppTimerStop(uiTimer);
             
-            return hppVarPutStr(aszResultVarKey, error == 0 ? "true" : "false", apcbResultLen_Out);
+            return hppVarPutStr(aszResultVarKey, bSuccess ? "true" : "false", apcbResultLen_Out);
+        }
+
+        // Parameters: time (in ms), function name, event  (name passed to variable "event")   
+        if(strcmp(aszFunctionName, "timer_event") == 0)   
+        {
+            char* pchParam3;
+            uint32_t uiTime;
+            bool bSuccess = false;
+
+            aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '3';
+            pchParam3 = hppVarGet(aszParamName, NULL);
+            if(pchParam3 == NULL) pchParam3 = "";
+
+            uiTime = atol(pchParam1);
+            if(uiTime < HPP_MIN_TIMER_TIME) uiTime = HPP_MIN_TIMER_TIME;  // minimum time for HPP interpreter  
+
+            if(*pchParam2 != 0) 
+            {
+                bSuccess = hppTimerScheduleEvent(uiTime, hppEventExecutionHandler, pchParam3, strlen(pchParam3) + 1, (void*)hppVarGetKey(pchParam2, true));
+            }
+
+            return hppVarPutStr(aszResultVarKey, bSuccess ? "true" : "false", apcbResultLen_Out);
         }
     }
     
@@ -578,7 +661,7 @@ bool hppAsyncProcessDataInt(const uint8_t apData[], uint16_t acbDataLen, uint8_t
     if(apData == NULL) return false;
     if(acbDataLen > HPP_ASYNC_MAX_DATA_SIZE) return false;
     
-    k_sched_lock();
+    if(!k_is_in_isr()) k_sched_lock();
 
     if(ring_buf_space_get(&hppAsyncRingBuf) >= acbDataLen + sizeof(uint16_t))
     {
@@ -590,7 +673,7 @@ bool hppAsyncProcessDataInt(const uint8_t apData[], uint16_t acbDataLen, uint8_t
     }
     else bRetVal = false;
 
-    k_sched_unlock();
+    if(!k_is_in_isr()) k_sched_unlock();
 
     return bRetVal;
 }
@@ -613,7 +696,7 @@ bool hppAsyncVarPutInt(const char aszVarName[], const char apValue[], uint16_t a
     if(uiVarNameLen > HPP_ASYNC_MAX_VAR_SIZE) return false;
     if(acbValueLen > HPP_ASYNC_MAX_DATA_SIZE) return false;
     
-    k_sched_lock();
+    if(!k_is_in_isr()) k_sched_lock();
 
     if(ring_buf_space_get(&hppAsyncRingBuf) >= acbValueLen + uiVarNameLen + 2*sizeof(uint16_t) + sizeof(uint8_t) + HPP_ASYNC_RINGBUF_SAFETY_BUFFER)
     {
@@ -627,7 +710,7 @@ bool hppAsyncVarPutInt(const char aszVarName[], const char apValue[], uint16_t a
     }
     else bRetVal = false;
 
-    k_sched_unlock();
+    if(!k_is_in_isr()) k_sched_unlock();
 
     return bRetVal;
 }
@@ -702,7 +785,7 @@ bool hppAsyncSetCoapContext(hppCoapMessageContext* apCoapMessageContext, bool ab
 
     if(apCoapMessageContext == NULL) return false;
   
-    k_sched_lock();
+    if(!k_is_in_isr()) k_sched_lock();
 
     if(ring_buf_space_get(&hppAsyncRingBuf) >= uiLen + sizeof(uint16_t) + sizeof(uint8_t) + HPP_ASYNC_RINGBUF_SAFETY_BUFFER)
     {
@@ -714,7 +797,7 @@ bool hppAsyncSetCoapContext(hppCoapMessageContext* apCoapMessageContext, bool ab
     }
     else bRetVal = false;
 
-    k_sched_unlock();
+    if(!k_is_in_isr()) k_sched_unlock();
 
     return bRetVal;
 }
@@ -727,6 +810,118 @@ bool hppAsyncSetCoapContext(hppCoapMessageContext* apCoapMessageContext, bool ab
 bool hppAsyncUsbInput(const uint8_t apData[], uint16_t acbDataLen)
 {
     return hppAsyncProcessDataInt(apData, acbDataLen, HPP_ASYNC_TLV_USB_RECV);
+}
+
+
+
+
+// ------------------------------------------------------------------
+// Timer functions 
+// ------------------------------------------------------------------
+
+static void hppTimerHandlerInt(struct k_timer *aTimer)
+{
+    uint32_t iTimerID = (uint32_t)k_timer_user_data_get(aTimer);
+
+    if(iTimerID < HPP_TIMER_RESOURCE_COUNT)
+    {
+       hppAsyncProcessDataInt((uint8_t*) &iTimerID, sizeof(uint32_t), HPP_ASYNC_TLV_TIMER_EXPIRED);
+    }
+}
+
+
+bool hppTimerStart(uint32_t aTimerID, uint32_t aTime, bool aIsContinous, hppTimerHandler aTimerHandler, void *apContext)
+{
+    k_timeout_t theDuration = K_MSEC(aTime);
+    k_timeout_t thePeriod = aIsContinous ? K_MSEC(aTime) :  K_NO_WAIT;
+
+    if(aTimerID >= HPP_TIMER_RESOURCE_COUNT) return false;
+    if(aTimerHandler == NULL) return false;
+
+    hppTimerResources[aTimerID].pHandler = aTimerHandler;
+    hppTimerResources[aTimerID].pContext = apContext;
+
+    k_timer_user_data_set(&(hppTimerResources[aTimerID].mTimerResource), (void*) aTimerID);
+    k_timer_start(&(hppTimerResources[aTimerID].mTimerResource), theDuration, thePeriod);
+
+    return true;
+}
+
+
+bool hppTimerStop(uint32_t aTimerID)
+{
+    if(aTimerID >= HPP_TIMER_RESOURCE_COUNT) return false;
+
+    k_timer_stop(&(hppTimerResources[aTimerID].mTimerResource));
+
+    return true;
+}
+
+
+// Scheduled Events
+static void hppEventTimerHandlerInt(struct k_timer *apTimer)
+{
+    uint32_t iTimerID = (uint32_t)k_timer_user_data_get(apTimer);
+
+    if(iTimerID < HPP_EVENT_TIMER_RESOURCE_COUNT)
+    {
+        if(!hppAsyncProcessDataInt((uint8_t*) &iTimerID, sizeof(uint32_t), HPP_ASYNC_TLV_EVENT_TIMER_EXPIRED))
+        {
+            // Release resource here if the schedule queue is full
+            hppEventTimerResource* pEventTimer = &(hppEventTimerResources[iTimerID]);
+
+            if(pEventTimer->pApplicationData) free(pEventTimer->pApplicationData);
+            pEventTimer->pApplicationData = NULL;
+            pEventTimer->mInUse = false;
+        }
+    }
+}
+
+
+bool hppTimerScheduleEvent(uint32_t aDelayFromNow, hppQueuedTimerHandler apHandler, void* apData, uint32_t aDataLen, void *apContext)
+{
+    k_timeout_t theDuration = K_MSEC(aDelayFromNow);
+    void* pAppData;
+    uint32_t i;
+
+    if(apHandler == NULL) return false;
+
+    k_sched_lock();
+    
+    for(i = 0; i < HPP_EVENT_TIMER_RESOURCE_COUNT; i++) 
+    {
+        if(hppEventTimerResources[i].mInUse == false) 
+        {
+            hppEventTimerResources[i].mInUse = true;
+            break;
+        }
+    }
+
+    k_sched_unlock();
+
+    if(i >= HPP_EVENT_TIMER_RESOURCE_COUNT) return false;
+
+    if(apData != NULL && aDataLen > 0)
+    {
+        pAppData = malloc(aDataLen);
+        if(pAppData == NULL) 
+        {
+            hppEventTimerResources[i].mInUse = false;
+            return false;
+        }
+
+        memcpy(pAppData, apData, aDataLen);
+        hppEventTimerResources[i].pApplicationData = pAppData;
+        hppEventTimerResources[i].mApplicationDataLen = aDataLen;
+    }
+
+    hppEventTimerResources[i].pContext = apContext;
+    hppEventTimerResources[i].pHandler = apHandler;
+
+    k_timer_user_data_set(&(hppEventTimerResources[i].mTimerResource), (void*) i);
+    k_timer_start(&(hppEventTimerResources[i].mTimerResource), theDuration, K_NO_WAIT);
+
+    return true;
 }
 
 
@@ -747,6 +942,9 @@ static void hppUserModeMain(void *p1, void *p2, void *p3)
     size_t iCoapResponseLen = 0;
     char* pchResult;
     bool bKeepLocked = false;
+    uint32_t uiTimerID;
+    hppTimerResource* pTimer;
+    hppEventTimerResource* pEventTimer;
 
     LOG_INF("main (user mode) priority: %d", k_thread_priority_get(k_current_get()));
 
@@ -898,6 +1096,25 @@ static void hppUserModeMain(void *p1, void *p2, void *p3)
                 ring_buf_get(&hppAsyncRingBuf, (uint8_t*)hppAsyncDataBuffer, uiLen);
                 hppAsyncDataBuffer[uiLen] = 0;
                 shell_execute_cmd(shell_backend_uart_get_ptr(), hppAsyncDataBuffer);   // Send to H++ handler instead?
+            break;
+
+            case HPP_ASYNC_TLV_TIMER_EXPIRED:
+                ring_buf_get(&hppAsyncRingBuf, (uint8_t*)&uiTimerID, sizeof(uint32_t));
+                if(uiTimerID >= HPP_TIMER_RESOURCE_COUNT) break;
+                
+                pTimer = &(hppTimerResources[uiTimerID]);
+                if(pTimer->pHandler) (pTimer->pHandler)(pTimer->pContext);
+            break;
+
+            case HPP_ASYNC_TLV_EVENT_TIMER_EXPIRED:
+                ring_buf_get(&hppAsyncRingBuf, (uint8_t*)&uiTimerID, sizeof(uint32_t));
+                if(uiTimerID >= HPP_EVENT_TIMER_RESOURCE_COUNT) break;
+                
+                pEventTimer = &(hppEventTimerResources[uiTimerID]);
+                if(pEventTimer->pHandler) (pEventTimer->pHandler)(pEventTimer->pApplicationData, pEventTimer->mApplicationDataLen, pEventTimer->pContext);
+                if(pEventTimer->pApplicationData) free(pEventTimer->pApplicationData);
+                pEventTimer->pApplicationData = NULL;
+                pEventTimer->mInUse = false;
             break;
         }
 
@@ -1087,10 +1304,24 @@ static void hppZephyrUsbInit()
 
 void hppZephyrInit()
 {
+    int i;
+
     hppGpioDev = device_get_binding("GPIO_0");
     ring_buf_init(&hppAsyncRingBuf, sizeof(hppAsyncRingBufBuffer), hppAsyncRingBufBuffer);
     hppZephyrUsbInit();
 
+    // Init timer objects
+    for(i = 0 ; i < HPP_TIMER_RESOURCE_COUNT ; i++)
+    {
+        k_timer_init(&(hppTimerResources[i].mTimerResource), hppTimerHandlerInt, NULL);
+    } 
+
+    for(i = 0 ; i < HPP_EVENT_TIMER_RESOURCE_COUNT ; i++)
+    {
+        k_timer_init(&(hppEventTimerResources[i].mTimerResource), hppEventTimerHandlerInt, NULL);
+    }
+
+  
 	LOG_INF("Start Halloween");
 
 	if(IS_ENABLED(CONFIG_RAM_POWER_DOWN_LIBRARY)) 

@@ -706,3 +706,4 @@ for details on the hardware capabilities.
 - timer_once(id, t, hdn): 	Starts a timer with the given id calling the H++ handler 'hdn' once fter 't' milliseconds.
 				Up to 8 timers (in total) are supported id = 0 .. 7.
 - timer_stop(id):		Stops the timer with a given id.	
+- timer_event(t, hdn, name): 	Starts an event timer calling the H++ handler 'hdn' once after 't' milliseconds an sets the variable 'event' to <name>

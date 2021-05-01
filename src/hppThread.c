@@ -15,7 +15,7 @@
 /*   - hppParser bindings (POST var/x)                                          */
 /* ----------------------------------------------------------------------------	*/
 /* Platform: OpenThread integrated in Zephire RTOS  				            */
-/* Nordic SDK Version: Connect SDK v1.4.1	       								*/
+/* Nordic SDK Version: Connect SDK v1.5.1	       								*/
 /* ----------------------------------------------------------------------------	*/
 /* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */

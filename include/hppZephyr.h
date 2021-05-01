@@ -15,7 +15,7 @@
 /*   - Peripherals function bindings                                            */       
 /* ----------------------------------------------------------------------------	*/
 /* Platform: Zephire RTOS on Nordic nRF52840						            */
-/* Nordic SDK Version: Connect SDK v1.4.1	       								*/
+/* Nordic SDK Version: Connect SDK v1.5.1	       								*/
 /* ----------------------------------------------------------------------------	*/
 /* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
 /* arnulf.rupp@web.de												            */
@@ -62,6 +62,8 @@
 // printing to Thread cli and CoAP response
 #include "../include/hppThread.h"
 
+
+#define HPP_TIMER_RESOURCE_COUNT 8
 
 
 // ------------------------------------------------------------------
@@ -116,7 +118,7 @@ void hppSyncUnlockParserMutext();
 
 // ------------------------------------------------------------------
 // Synchronized function calls for H++ parser functions
-// -----------------------------------------------------------------
+// ------------------------------------------------------------------
 
 bool hppSyncAddExternalFunctionLibrary(hppExternalFunctionType aExternalFunctionType);
 hppExternalPollFunctionType hppSyncAddExternalPollFunction(hppExternalPollFunctionType aNewExternalPollFunction);
@@ -153,7 +155,7 @@ bool hppAsyncVarDelete(const char aszVarName[]);
 bool hppAsyncParseExpression(const char* aszCode, bool aWriteResultToCli);
 
 // Put H++ variable name to be executed in queue for processing. Returns true if successful and false if not (no buffer).
-// hppAsyncParseVar("") may can be used to unlock the parser mutex in case of abSyncWithNext=true operation if the regular
+// hppAsyncParseVar("") may be used to unlock the parser mutex in case of abSyncWithNext=true operation if the regular
 // parse operation could not be put in queue. A safty buffer guarantees this is always possible at least once.
 bool hppAsyncParseVar(const char* aszVarName);
 
@@ -178,6 +180,33 @@ bool hppAsyncVarHide(const char* aszPassword);
 // If 'abSyncWithNext' is true, this command will be executed with the next one. If successful it therefore must be
 // followed by another hppAsyncXXX command immediatelly to avoid permanently locking the parser and the variable mutex.
 bool hppAsyncSetCoapContext(hppCoapMessageContext* apCoapMessageContext, bool abSyncWithNext);
+
+
+
+// ------------------------------------------------------------------
+// Timer functions 
+// ------------------------------------------------------------------
+
+// Timer handler
+typedef void (*hppTimerHandler)(void *apContext);
+
+// Handler for a queued single shot timer event created with hppPlanTimerEvent(...)
+typedef void (*hppQueuedTimerHandler)(void* apData, uint32_t aDataLen, void *apContext);
+
+// Start the timer with the given ID. The timeout time is measured in in milliseconds.
+// Returns true if successful and false if not
+bool hppTimerStart(uint32_t aTimerID, uint32_t aTime, bool aIsContinous, hppTimerHandler aTimerHandler, void *apContext);
+
+// Stop a timer with a given ID
+// Returns true if successful and false if not
+bool hppTimerStop(uint32_t aTimerID);
+
+// Create a single shoot timer event and put it in a queue of timer events
+// The timeout time is measured in in milliseconds
+// The attached data will be copied in a and deleted after the handler has been executed
+// Returns true if successful and false if not
+bool hppTimerScheduleEvent(uint32_t aDelayFromNow, hppQueuedTimerHandler apHandler, void* apData, uint32_t aDataLen, void *apContext);
+
 
 
 // ------------------------------------------------------------------
