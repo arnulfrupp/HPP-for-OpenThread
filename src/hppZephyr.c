@@ -56,10 +56,10 @@
 #include <shell/shell_uart.h>
 #include <drivers/gpio.h>
 #include <sys/ring_buffer.h>
-
 #include <drivers/uart.h>
 #include <usb/usb_device.h>
 #include <drivers/usb/usb_dc.h>
+#include <settings/settings.h>
 
 
 // Zephir OpenThread integration Library (for openthread_api_mutex_lock/unlock)
@@ -186,7 +186,149 @@ hppEventTimerResource hppEventTimerResources[HPP_EVENT_TIMER_RESOURCE_COUNT];
 #define HPP_ASYNC_TLV_EVENT_TIMER_EXPIRED           16
 
 
+// ------------------------------------------
+// Flash memory and settings relate functions 
+// ------------------------------------------
 
+static int hppDeleteVarSettingHandler(const char *aKey, size_t aLen, settings_read_cb aReadCb, void* apReadCbArg, void *aContext)
+{
+    uint16_t* piCount = (uint16_t*)aContext; 
+    char chBegin = 'a';
+    char chEnd = 'z';
+
+    printf("delete:%s\r\n", aKey);
+
+    if(piCount == NULL || strlen(aKey) < 1) return 0;
+
+    if(*piCount & 0x8000) { chBegin = 'A'; chEnd = 'Z'; }
+
+    if(aKey[0] >= chBegin && aKey[0] <= chEnd)
+    {
+        char* pVarName = (char*)malloc(strlen(aKey) + 5);                      // space for header and zero byte
+        if(pVarName == NULL) return 0;
+
+        strcpy(pVarName, "hpp/");                                              // header is 4 bytes long
+        strcpy(pVarName + 4, aKey);
+        settings_delete(pVarName);
+        (*piCount)++;
+        free(pVarName);
+    }
+
+    return 0;
+}
+
+
+bool hppDeleteVarFromFlash(bool abGlobal)
+{
+    uint16_t iCount = abGlobal ? 0x8000 : 0x0;
+
+    settings_load_subtree_direct("hpp", hppDeleteVarSettingHandler, &iCount);
+
+    return (iCount & 0x7FFF) > 0; 
+}
+
+
+static int hppReadVarSettingHandler(const char *aKey, size_t aLen, settings_read_cb aReadCb, void* apReadCbArg, void *aContext)
+{
+    char* pValue;
+    uint16_t* piCount = (uint16_t*)aContext; 
+    char chBegin = 'a';
+    char chEnd = 'z';
+
+    printf("load:%s\r\n", aKey);
+
+    if(piCount == NULL || strlen(aKey) < 1) return 0;
+
+    if(*piCount & 0x8000) { chBegin = 'A'; chEnd = 'Z'; }
+
+    if(aKey[0] >= chBegin && aKey[0] <= chEnd)
+    {
+        pValue = hppVarPut(aKey, hppNoInitValue, aLen);             // Just reserve memory and write 0 byte behind the data
+        
+        if(pValue != NULL) 
+        {
+            aReadCb(apReadCbArg, pValue, aLen);
+            (*piCount)++;
+        }
+    }
+
+    return 0;
+}
+
+
+bool hppReadVarFromFlash(bool abGlobal)
+{
+    uint16_t iCount = abGlobal ? 0x8000 : 0x0;
+
+    settings_load_subtree_direct("hpp", hppReadVarSettingHandler, &iCount);
+
+    return (iCount & 0x7FFF) > 0; 
+}
+
+
+bool hppWriteVarToFlash(bool abGlobal)
+{
+	struct hppVarListStruct* searchVar;
+    char* pVarName;
+    size_t cbVarNameMaxLen = 32;
+    size_t cbKeyLen;
+    char chBegin = 'a';
+    char chEnd = 'z';
+  
+    if(abGlobal) { chBegin = 'A'; chEnd = 'Z'; }
+
+    pVarName = (char*)malloc(cbVarNameMaxLen + 5);                          // space for header and zero byte
+    if(pVarName == NULL) return false;
+
+    strcpy(pVarName, "hpp/");                                               // header is 4 bytes long
+	searchVar = pFirstVar;
+
+	// Search for the right entries in save them
+	while(searchVar != NULL)
+	{
+		if(searchVar->szKey[0] >= chBegin && searchVar->szKey[0] <= chEnd)
+        { 
+
+            printf("save:%s", searchVar->szKey);
+
+            cbKeyLen = strlen(searchVar->szKey);
+
+            if(cbKeyLen > cbVarNameMaxLen)
+            {
+                char* pNewVarName = (char*)realloc(pVarName, cbKeyLen + 5); // space for header and zero byte
+                
+                if(pNewVarName == NULL)
+                {
+                    free(pVarName);                                         // realloc does not free the original pointer  
+                    return false; 
+                }
+
+                pVarName = pNewVarName;
+                cbVarNameMaxLen = cbKeyLen;
+            }
+
+            strcpy(pVarName + 4, searchVar->szKey);
+
+            printf(" (%s)\r\n", pVarName);
+
+            if(settings_save_one(pVarName, searchVar->pValue, searchVar->cbValueLen) != 0)
+            {
+                free(pVarName);
+                return false;
+            }
+        }
+
+		searchVar = searchVar->pNext;
+	}
+    
+    free(pVarName);
+    return true;
+}
+
+
+// --------------------------------------------
+// Handler for timer related H++ function calls 
+// --------------------------------------------
 
 void hppTimerExecutionHandler(void *apContext)
 {
@@ -311,7 +453,7 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
 
         if(strcmp(aszFunctionName, "io_cfg_btn") == 0)    // pin [, activ_low/high(0/1), pull_up/down (1/0)] 
         {
-            return hppVarPutStr(aszResultVarKey,  "false", apcbResultLen_Out);
+            return hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
         }
               
    }
@@ -319,31 +461,32 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
     // flash_XXX commands
     if(strncmp(aszFunctionName, "flash_", 6) == 0)
     {
-        if(strcmp(aszFunctionName, "flash_save") == 0 || strcmp(aszFunctionName, "flash_save_code") == 0)   
+        if(strcmp(aszFunctionName, "flash_save") == 0)   
+        {         
+            hppDeleteVarFromFlash(true);        // Delete existing data 
+            return hppVarPutStr(aszResultVarKey, hppWriteVarToFlash(true) ? "true" : "false", apcbResultLen_Out);
+        }
+
+        if(strcmp(aszFunctionName, "flash_save_code") == 0)   
         {
-            size_t cbLen = 0;
-         
-            return hppVarPutStr(aszResultVarKey, hppUI32toA(szNumeric, cbLen), apcbResultLen_Out);
+            hppDeleteVarFromFlash(false);       // Delete existing code
+            return hppVarPutStr(aszResultVarKey, hppWriteVarToFlash(false) ? "true" : "false", apcbResultLen_Out);
         }
 
         if(strcmp(aszFunctionName, "flash_restore") == 0)    
         {
-            size_t cbLen = 0;
-                        
-            return hppVarPutStr(aszResultVarKey, hppUI32toA(szNumeric, cbLen), apcbResultLen_Out);
+            return hppVarPutStr(aszResultVarKey, hppReadVarFromFlash(true) ? "true" : "false", apcbResultLen_Out);
         }
 
         if(strcmp(aszFunctionName, "flash_delete") == 0)    
         {
-            return hppVarPutStr(aszResultVarKey, "true", apcbResultLen_Out);
+            return hppVarPutStr(aszResultVarKey, hppDeleteVarFromFlash(true) ? "true" : "false", apcbResultLen_Out);
         }
 
         if(strcmp(aszFunctionName, "flash_delete_code") == 0)    
         {          
-            return hppVarPutStr(aszResultVarKey, "true", apcbResultLen_Out);
+            return hppVarPutStr(aszResultVarKey, hppDeleteVarFromFlash(false) ? "true" : "false", apcbResultLen_Out);
         }
-
-
     }
 
     // timer_XXX commands

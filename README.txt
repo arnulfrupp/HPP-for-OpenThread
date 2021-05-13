@@ -695,9 +695,8 @@ for details on the hardware capabilities.
 			Inside the handler function the variable 'pin' indicates the pin identifier of the button released
 			and the variable 'hold_time' indicates the hold time before release.
 
-- flash_save():		Saves all global (capitalized) variables to the flash memory starting at 0xb0000 or alternating
-			0xb8000 (max. 32kb).
-- flash_save_code():	Saves all H++ code (lower case) variables to the flash memory starting at 0xba0000 (max. 64kb).
+- flash_save():		Saves all global (capitalized) variables to the flash memory.
+- flash_save_code():	Saves all H++ code (lower case) variables to the flash memory.
 - flash_restore():	Restores all global variables stored in the flash memory with flash_save().
 - flash_delete():	Deletes global variables stored in the flash memory.
 - flash_delete_code():	Deletes code variables stored in the flash memory.

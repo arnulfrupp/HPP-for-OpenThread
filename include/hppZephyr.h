@@ -66,6 +66,23 @@
 #define HPP_TIMER_RESOURCE_COUNT 8
 
 
+// ------------------------------------------
+// Flash memory and settings relate functions 
+// ------------------------------------------
+
+// Load H++ variables from flash to RAM. 
+// If abGlobal is true, globale variables with capital letter in front are loader. Otherwise program code is loaded.
+bool hppReadVarFromFlash(bool abGlobal);
+
+// Write H++ variables from RAM to flash. 
+// If abGlobal is true, globale variables with capital letter in front are written. Otherwise program code is written.
+bool hppWriteVarToFlash(bool abGlobal);
+
+// Delete H++ variables from flash. 
+// If abGlobal is true, globale variables with capital letter in front are deleted. Otherwise program code is deleted.
+bool hppDeleteVarFromFlash(bool abGlobal);
+
+
 // ------------------------------------------------------------------
 // Synchronized function calls for relevant hppVarXXX functions
 // ------------------------------------------------------------------
@@ -114,6 +131,7 @@ bool hppSyncTryLockParserMutext(int iWaitTimeInMs);
 // Unlock the Parser Mutex
 void hppSyncUnlockParserMutext();
 */
+
 
 
 // ------------------------------------------------------------------
