@@ -14,7 +14,7 @@
 /*   - Timer function bindings                                                  */
 /*   - Peripherals function bindings                                            */       
 /* ----------------------------------------------------------------------------	*/
-/* Platform: Zephire RTOS on Nordic nRF52840						            */
+/* Platform: Zephire RTOS                   						            */
 /* Nordic SDK Version: Connect SDK v1.5.1	       								*/
 /* ----------------------------------------------------------------------------	*/
 /* Copyright (c) 2018 - 2021, Arnulf Rupp							            */
@@ -62,9 +62,13 @@
 #include <settings/settings.h>
 
 
-// Zephir OpenThread integration Library (for openthread_api_mutex_lock/unlock)
+// Zephyr OpenThread integration Library (for openthread_api_mutex_lock/unlock)
 #include <net/openthread.h>
 
+
+#if CONFIG_HPP_NRF52840
+#include "../include/hppNRF52840.h"
+#endif
 
 
 // ----------------
@@ -143,7 +147,8 @@ typedef struct hppEventTimerResource
 // Global variables
 // ----------------
 
-const struct device *hppGpioDev;
+const struct device *hppGpioDev0;
+const struct device *hppGpioDev1;
 
 uint8_t hppAsyncRingBufBuffer[HPP_ASYNC_RING_BUF_BUFFER_SIZE];
 struct ring_buf hppAsyncRingBuf;
@@ -380,6 +385,7 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
     if(strncmp(aszFunctionName, "io_", 3) == 0)
     {
         // GPIO
+        const struct device *hppGpioDev = hppGpioDev0;
 
         if(strcmp(aszFunctionName, "io_pin") == 0)   // port , pin
             return hppVarPutStr(aszResultVarKey, hppI2A(szNumeric, atoi(pchParam1) * 32 + atoi(pchParam2)), apcbResultLen_Out);
@@ -388,6 +394,9 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
         {
             gpio_pin_t pin = atoi(pchParam1);
             int val = atoi(pchParam2) == 0 ? 0 : 1;
+
+            if(pin > 63) return hppVarPutStr(aszResultVarKey, "invalid", apcbResultLen_Out);
+            if(pin > 31) { hppGpioDev = hppGpioDev1; pin -= 32; }
             
             if(gpio_pin_set(hppGpioDev, pin, val) != 0) return hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
                 
@@ -396,8 +405,13 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
 
         if(strcmp(aszFunctionName, "io_get") == 0)    // pin
         {
+            int val;
             gpio_pin_t pin = atoi(pchParam1);
-            int val = gpio_pin_get(hppGpioDev, pin);
+
+            if(pin > 63) return hppVarPutStr(aszResultVarKey, "invalid", apcbResultLen_Out);
+            if(pin > 31) { hppGpioDev = hppGpioDev1; pin -= 32; }
+
+            val = gpio_pin_get(hppGpioDev, pin);
 
             if(val < 0) hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
 
@@ -406,8 +420,11 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
 
         if(strcmp(aszFunctionName, "io_cfg_output") == 0)    // pin [, high_driver (false, true)]
         {
-            gpio_pin_t pin = atoi(pchParam1);
             gpio_flags_t flags = 0;
+            gpio_pin_t pin = atoi(pchParam1);
+
+            if(pin > 63) return hppVarPutStr(aszResultVarKey, "invalid", apcbResultLen_Out);
+            if(pin > 31) { hppGpioDev = hppGpioDev1; pin -= 32; }
 
             if(strcmp(pchParam2, "true") == 0) flags = GPIO_DS_ALT_LOW | GPIO_DS_ALT_HIGH;
             else if(*pchParam2 == 0 || strcmp(pchParam2, "false")) flags = GPIO_DS_DFLT_LOW | GPIO_DS_DFLT_HIGH;
@@ -422,6 +439,9 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
         {
             gpio_pin_t pin = atoi(pchParam1);
 
+            if(pin > 63) return hppVarPutStr(aszResultVarKey, "invalid", apcbResultLen_Out);
+            if(pin > 31) { hppGpioDev = hppGpioDev1; pin -= 32; }
+
             if(*pchParam2 == 0) gpio_pin_configure(hppGpioDev, pin, GPIO_INPUT | GPIO_INT_DISABLE);
             else if(atoi(pchParam2) == 0) gpio_pin_configure(hppGpioDev, pin, GPIO_INPUT | GPIO_PULL_DOWN | GPIO_INT_DISABLE);
             else if(atoi(pchParam2) == 1) gpio_pin_configure(hppGpioDev, pin, GPIO_INPUT | GPIO_PULL_UP | GPIO_INT_DISABLE);
@@ -435,17 +455,69 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
 
         if(strcmp(aszFunctionName, "io_pwm_restart") == 0)   // no param 
         {
+#if CONFIG_HPP_NRF52840            
+            if(NRF_PWM0->SEQ[0].REFRESH > 0) hppRestartPWM();
             return hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
+            return hppVarPutStr(aszResultVarKey, NRF_PWM0->SEQ[0].REFRESH > 0 ? "true" : "false", apcbResultLen_Out);
+#else
+            return hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
+#endif
         }
 
         if(strcmp(aszFunctionName, "io_pwm_stop") == 0)   // no param 
         {
+#if CONFIG_HPP_NRF52840            
+            hppStopPWM();
+            return hppVarPutStr(aszResultVarKey, "true", apcbResultLen_Out);
+#else
             return hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
+#endif
         }
                     
         if(strcmp(aszFunctionName, "io_pwm_start") == 0)   // count_stop, seq, val_repeat, seq_repeat, pin1 [, pin2, pin3, pin4]
         {
+#if CONFIG_HPP_NRF52840            
+            size_t cSequenceLen;
+            int iPin1, iPin2, iPin3, iPin4; 
+
+            aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '3';
+            char* pchParam3 = hppVarGet(aszParamName, NULL);
+            aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '4';
+            char* pchParam4 = hppVarGet(aszParamName, NULL);
+            aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '5';
+            char* pchParam5 = hppVarGet(aszParamName, NULL);
+            aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '6';
+            char* pchParam6 = hppVarGet(aszParamName, NULL);
+            aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '7';
+            char* pchParam7 = hppVarGet(aszParamName, NULL);
+            aszParamName[HPP_PARAM_PREFIX_LEN - 1] = '8';
+            char* pchParam8 = hppVarGet(aszParamName, NULL);
+
+            if(pchParam3 == NULL) pchParam3 = "1";
+            if(pchParam4 == NULL) pchParam4 = "0";
+            if(pchParam5 == NULL) iPin1 = -1; else iPin1 = atoi(pchParam5);
+            if(pchParam6 == NULL) iPin2 = -1; else iPin2 = atoi(pchParam6);
+            if(pchParam7 == NULL) iPin3 = -1; else iPin3 = atoi(pchParam7);
+            if(pchParam8 == NULL) iPin4 = -1; else iPin4 = atoi(pchParam8);
+
+            if(iPin3 < 0 && iPin4 < 0)    
+            {
+                if(iPin2 < 0) cSequenceLen = cbParam2 / 2;    // only one pin active --> 2 bytes per sequence
+                else cSequenceLen = cbParam2 / 4;                       // two pins active --> 4 bytes per sequence
+            }
+            else cSequenceLen = cbParam2 / 8;   // three or four pins active --> 8 bytes per sequence
+
+            if(cSequenceLen >= 2 || (atoi(pchParam4) == 0 && cSequenceLen >= 1))
+            {
+                hppStartPWM(atoi(pchParam1), iPin1, iPin2, iPin3, iPin4, (uint16_t*) pchParam2,
+                            cSequenceLen, atoi(pchParam3), atoi(pchParam4));
+                return hppVarPutStr(aszResultVarKey, "true", apcbResultLen_Out);
+            }
+
             return hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
+#else
+            return hppVarPutStr(aszResultVarKey, "false", apcbResultLen_Out);
+#endif
         }
 
         
@@ -463,13 +535,13 @@ static char* hppEvaluateZephyrFunction(char aszFunctionName[], char aszParamName
     {
         if(strcmp(aszFunctionName, "flash_save") == 0)   
         {         
-            hppDeleteVarFromFlash(true);        // Delete existing data 
+            //hppDeleteVarFromFlash(true);        // Delete existing data 
             return hppVarPutStr(aszResultVarKey, hppWriteVarToFlash(true) ? "true" : "false", apcbResultLen_Out);
         }
 
         if(strcmp(aszFunctionName, "flash_save_code") == 0)   
         {
-            hppDeleteVarFromFlash(false);       // Delete existing code
+            //hppDeleteVarFromFlash(false);       // Delete existing code
             return hppVarPutStr(aszResultVarKey, hppWriteVarToFlash(false) ? "true" : "false", apcbResultLen_Out);
         }
 
@@ -1449,7 +1521,9 @@ void hppZephyrInit()
 {
     int i;
 
-    hppGpioDev = device_get_binding("GPIO_0");
+    hppGpioDev0 = device_get_binding("GPIO_0");
+    hppGpioDev1 = device_get_binding("GPIO_1");
+
     ring_buf_init(&hppAsyncRingBuf, sizeof(hppAsyncRingBufBuffer), hppAsyncRingBufBuffer);
     hppZephyrUsbInit();
 

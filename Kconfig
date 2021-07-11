@@ -13,3 +13,12 @@ source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"
 # module = BLE_UTILS
 # module-str = Bluetooth connection utilities
 # source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"
+
+
+# Halloween Options 
+# -----------------
+
+config HPP_NRF52840
+	bool "Enable support for nRF52840 specific features (PWM)"
+	select NRFX_PWM0
+	default n

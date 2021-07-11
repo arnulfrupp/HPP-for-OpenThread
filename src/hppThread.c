@@ -158,7 +158,6 @@ otError hppCoapSend(const char* aszUriPathAddress, const char* aszUriPathOptions
 
     if (error != OT_ERROR_NONE)
     {
-        //NRF_LOG_INFO("Failed to send CoAP Request: %d\r\n", error);
         otMessageFree(pMessage);
     }
 
@@ -823,20 +822,19 @@ bool hppAddAddress(const char* aAddress)
 
     if(aAddress == NULL) return false;
 
+    memset(&myNetifAddress, 0, sizeof(otNetifAddress));
+
     if(otIp6AddressFromString(aAddress, &myNetifAddress.mAddress) == OT_ERROR_NONE)
     {
-        myNetifAddress.mNext = NULL;
         myNetifAddress.mPreferred = true;
         myNetifAddress.mPrefixLength = 64;
-        myNetifAddress.mRloc = false;
-        myNetifAddress.mScopeOverride  = 0;
-        myNetifAddress.mScopeOverrideValid  = false;
         myNetifAddress.mValid = true;
+        myNetifAddress.mAddressOrigin = OT_ADDRESS_ORIGIN_MANUAL;
 
         while(*aAddress == ' ') aAddress++;  //Ingore leading spaces
         if(strlen(aAddress) < 2) return false;
 
-        // (Re-)regiter address
+        // (Re-)register address
         if(tolower(aAddress[0]) == 'f' && tolower(aAddress[1]) == 'f') 
             theError = otIp6SubscribeMulticastAddress(hppOpenThreadInstance, &myNetifAddress.mAddress);
         else
@@ -1249,7 +1247,7 @@ static char* hppEvaluateOtFunction(char aszFunctionName[], char aszParamName[], 
         
             openthread_api_mutex_lock(hppOpenThreadContext);
             bResult = hppAddAddress(pchParam1);  // hppAddAddress returns false in case the address string is NULL
-            openthread_api_mutex_lock(hppOpenThreadContext);
+            openthread_api_mutex_unlock(hppOpenThreadContext);
             
             return hppVarPutStr(aszResultVarKey, bResult ? "true" : "false", apcbResultLen_Out);
         }

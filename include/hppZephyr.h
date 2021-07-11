@@ -14,7 +14,7 @@
 /*   - Timer function bindings                                                  */
 /*   - Peripherals function bindings                                            */       
 /* ----------------------------------------------------------------------------	*/
-/* Platform: Zephire RTOS on Nordic nRF52840						            */
+/* Platform: Zephire RTOS                   						            */
 /* Nordic SDK Version: Connect SDK v1.5.1	       								*/
 /* ----------------------------------------------------------------------------	*/
 /* Copyright (c) 2018 - 2021, Arnulf Rupp							            */

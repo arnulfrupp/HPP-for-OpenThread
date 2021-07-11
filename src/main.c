@@ -186,6 +186,8 @@ void main(void)
 
   	//Read code from flash memory if ID matches with predefined ID
     if(hppReadVarFromFlash(false) == false)	LoadDemoScripts();    // Load demos script if no code was in the flash memory
+	//LoadDemoScripts(); 
+
 
 	hppAsyncParseVar("startup");
 	

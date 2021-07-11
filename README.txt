@@ -671,7 +671,7 @@ for details on the hardware capabilities.
 			no pull up or down is activated.
 
 - io_pwm_start(count_stop, seq, val_repeat, seq_repeat, pin1 [, pin2, pin3, pin4]): Activates a PWM unit with 
-			PWM frequency 16MHz / dount_stop. Duty cycle values are provided in the byte string 'seq' in
+			PWM frequency 16MHz / count_stop. Duty cycle values are provided in the byte string 'seq' in
 			groups of one, two or four subsequent duty cycle values in uint16 format, depending on how
 			many pins are active. Duty cycle values range from 0 to count_stop (100%).
 			Every PWM setting is repeated 'val_repeat' times until the next values are taken. If 'val_repeat'
