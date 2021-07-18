@@ -833,6 +833,8 @@ char* hppParseExpressionInt(struct hppParseExpressionStruct* apParseContext, con
 											if(eControlStatus == hppControlStatus_Else) pchResult = hppParseExpressionInt(apParseContext, aszResultVarKey, &cbResultLen, ";}", &chTerm);  // Temporary use of result variable
 											else chTerm = hppIgnoreExpression(apParseContext);
 										}
+										
+										chTerm = 32;
 										continue;  // Expression stops here. Return to main loop for next expression 
 									}
 								}
