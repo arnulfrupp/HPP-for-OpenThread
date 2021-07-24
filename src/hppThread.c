@@ -77,7 +77,7 @@
 
 #define HPP_MAX_PAYLOAD_LENGTH 1280       // Maximum Payload size for assignment to hppVar resources. 1280 is the maximum expected for regular (non-blockwise) coap
 
-#define HPP_MAX_CLI_HPP_CMD_LEN 80
+#define HPP_MAX_CLI_HPP_CMD_LEN 100
 #define HPP_MAX_CLI_COUNT 10
 
 
@@ -113,6 +113,9 @@ static size_t hppCliCommandTableSize = 0;
 
 // Hiding variables
 bool hppHideVarResources = false;
+
+// CLI output buffer
+static char hppCliBuf[HPP_MAX_CLI_HPP_CMD_LEN];
 
 // -----------------------
 // Send CoAP Messages
@@ -1179,8 +1182,11 @@ void hppCliOutputStr(const char* aszText, bool abNewLine)
 {
     if(aszText == NULL) return; 
 
+    otCliOutputFormat("%s", aszText);
+    if(abNewLine) otCliOutputFormat("\r\n");
+
+    /*
     // The use of  otCliOutputFormat(...) makes Zephire crash  --> use printf(...)
-    
     for(int i = 0; i < strlen(aszText); i++)
     {
         if(aszText[i] == '\n') otCliOutput("\r\n", 2);
@@ -1190,23 +1196,21 @@ void hppCliOutputStr(const char* aszText, bool abNewLine)
     }
 
     if(abNewLine) otCliOutput("\r\n", 2);
+    */
 }
 
 // handler for 'hpp' command executing H++ code passed as parameters 
 static void hppCliHppCommandHandler(void* apContext, uint8_t argc, char *argv[])
 {
-    //char* pchResult;
-    char szCmd[HPP_MAX_CLI_HPP_CMD_LEN + 1];
-
-    szCmd[0] = 0;
+    hppCliBuf[0] = 0;
     for(int i = 0; i < argc; i++)    // build command string from mutliple paramters with ' ' in between 
     {
-        strncat(szCmd, argv[i], HPP_MAX_CLI_HPP_CMD_LEN - strlen(szCmd));
-        strcat(szCmd, " ");
-        szCmd[HPP_MAX_CLI_HPP_CMD_LEN] = 0;   // make sure it is always null terminated
+        strncat(hppCliBuf, argv[i], HPP_MAX_CLI_HPP_CMD_LEN - strlen(hppCliBuf));
+        strcat(hppCliBuf, " ");
+        hppCliBuf[HPP_MAX_CLI_HPP_CMD_LEN] = 0;   // make sure it is always null terminated
     }  
 
-    if(!hppAsyncParseExpression(szCmd, true)) hppCliOutputStr("H++ parser queue full", true);
+    if(!hppAsyncParseExpression(hppCliBuf, true)) hppCliOutputStr("H++ parser queue full", true);
 }
      
 
@@ -1503,7 +1507,8 @@ static char* hppEvaluateOtFunction(char aszFunctionName[], char aszParamName[], 
 
         if(strcmp(aszFunctionName, "cli_put") == 0)    // cmd_string
         {   
-            if(pchParam1 != NULL) otCliConsoleInputLine(pchParam1, cbParam1);
+            //if(pchParam1 != NULL) otCliConsoleInputLine(pchParam1, cbParam1);
+            if(pchParam1 != NULL) otCliInputLine(pchParam1);
 
             return hppVarPutStr(aszResultVarKey, pchParam1 != NULL ? "true" : "false", apcbResultLen_Out);
         }
@@ -1603,6 +1608,7 @@ static void hppThreadPollFunction(struct hppParseExpressionStruct* apParseContex
 // Thread CLI Output
 // ---------------------
 
+/*
 static int hppCliOutputHandler(const char *apCliBuf, uint16_t aBufLength, void *apContext)
 {
     if(apCliBuf == NULL) return 0;   // Nothing to process   
@@ -1617,6 +1623,22 @@ static int hppCliOutputHandler(const char *apCliBuf, uint16_t aBufLength, void *
     hppZephyrUsbSend(apCliBuf, aBufLength);
 
     return aBufLength;
+} */
+
+
+static int hppCliOutputHandler(void *apContext, const char *apFormat, va_list aArguments)
+{
+    int iLen;
+
+    if(apFormat == NULL) return 0;
+
+    vprintf(apFormat, aArguments);
+    vsnprintf(hppCliBuf, HPP_MAX_CLI_HPP_CMD_LEN, apFormat, aArguments);
+    iLen = strlen(hppCliBuf);
+
+    hppZephyrUsbSend(hppCliBuf, iLen);
+
+    return iLen;
 }
 
 
@@ -1644,7 +1666,8 @@ void hppThreadInit()
     hppSyncAddExternalFunctionLibrary(hppEvaluateOtFunction);
 
     // Init CLI and redirect CLI output  (openthread_start already inits the CLI but we need to redirect the output)
-    otCliConsoleInit(hppOpenThreadInstance, hppCliOutputHandler, NULL);
+    //otCliConsoleInit(hppOpenThreadInstance, hppCliOutputHandler, NULL);
+    otCliInit(hppOpenThreadInstance, hppCliOutputHandler, NULL);
 
     hppCliCommandTable = (otCliCommand*) malloc(sizeof(otCliCommand));
     if(hppCliCommandTable != NULL)

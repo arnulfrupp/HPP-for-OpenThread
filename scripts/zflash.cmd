@@ -29,7 +29,7 @@ IF "%ZBOARD%"=="nrf52840dongle_nrf52840" (
     nrfutil pkg generate --hw-version 52 --sd-req=0x00 --application %ZBUILDDIR%\zephyr\zephyr.hex --application-version 1 scripts\output\build.zip
     echo.
     echo Put dongle at port %ZCOM% in programming mode [side button]
-    echo - edit "scripts/dongle_com_port.txt" to change COM port -
+    echo - edit "scripts\var\dongle_com_port.txt" to change COM port -
     nrfutil dfu usb-serial -pkg scripts\output\build.zip -p %ZCOM%
 
 ) else (

@@ -1,6 +1,6 @@
 @ECHO OFF
 
-set NCS_TAG=v1.5.1
+set /p NCS_TAG=<%~dp0\var\SDK_Version.txt
 
 CALL "%HOMEPATH%\ncs\%NCS_TAG%\toolchain\cmd\env.cmd"
 
@@ -14,11 +14,11 @@ IF NOT EXIST "%ZEPHYR_BASE%\..\.west\config" (
 )
 
 SETLOCAL
-set /p ZTARGET=<%~dp0\target.txt
+set /p ZTARGET=<%~dp0\var\target.txt
 
 IF "%ZTARGET%"=="" ( 
     echo.
-    echo File target.txt not found in /scripts !!!
+    echo File target.txt not found in scripts\var !!!
     echo.
     echo.
     pause
@@ -44,7 +44,7 @@ IF "%ZTARGET%"=="dongle" (
     ENDLOCAL
     set ZBOARD=nrf52840dongle_nrf52840
     set ZBUILDDIR=build_nrf52840dongle
-    set /p ZCOM=<%~dp0\dongle_com_port.txt
+    set /p ZCOM=<%~dp0\var\dongle_com_port.txt
 )
 
 
@@ -53,11 +53,11 @@ IF "%ZTARGET%"=="dongle" (
 
 IF "%ZBOARD%"=="" ( 
     echo.
-    echo ###############################################
-    echo Unknown target board in /scripts/target.txt !!!
+    echo ##################################################
+    echo Unknown target board in scripts\var\target.txt !!!
     echo.
     echo Use "ztarget <target>" to set the target board
-    echo ###############################################
+    echo ##################################################
     echo.
 )
 

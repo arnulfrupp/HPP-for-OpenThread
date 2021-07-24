@@ -17,7 +17,7 @@ goto END
 :SUCCESS
 
 echo.
-echo %1>%~dp0\target.txt
+echo %1>%~dp0\var\target.txt
 echo target board = "%1"
 CALL "%~dp0\zsetenv.cmd"
 echo.
