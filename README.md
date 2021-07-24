@@ -5,4 +5,4 @@ Look at [readme.txt](https://github.com/arnulfrupp/HPP-for-OpenThread/blob/maste
 
 
 Helloween moved to Zephyr.
-Currently the Nordic Connect SDK v1.5.1 is supported. 
+Currently the Nordic Connect SDK v1.6.0 is supported. 
